@@ -2,3 +2,4 @@ flask
 requests
 cryptography
 python-dotenv
+supabase==1.12.0
