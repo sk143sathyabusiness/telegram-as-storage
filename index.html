@@ -1,0 +1,1010 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TeamVault</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ── TOKENS ─────────────────────────────────────────────────────────── */
+:root {
+  --bg:        #0d1117;
+  --surface:   #161b22;
+  --surface2:  #1c2330;
+  --border:    #2a3441;
+  --teal:      #00c9a7;
+  --teal-dim:  #00c9a720;
+  --teal-mid:  #00c9a750;
+  --text:      #e6edf3;
+  --muted:     #7d8b9a;
+  --danger:    #f85149;
+  --warn:      #d29922;
+  --mono:      'JetBrains Mono', monospace;
+  --sans:      'Inter', sans-serif;
+  --radius:    6px;
+  --sidebar-w: 220px;
+}
+
+/* ── RESET ───────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: var(--sans); background: var(--bg); color: var(--text);
+       font-size: 14px; height: 100vh; overflow: hidden; }
+button { font-family: var(--sans); cursor: pointer; border: none; }
+input  { font-family: var(--sans); }
+a      { color: var(--teal); text-decoration: none; }
+
+/* ── LOGIN ───────────────────────────────────────────────────────────── */
+#login-screen {
+  display: flex; align-items: center; justify-content: center;
+  height: 100vh; background: var(--bg);
+}
+.login-box {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 40px 36px; width: 340px;
+}
+.login-logo {
+  font-family: var(--mono); font-size: 18px; color: var(--teal);
+  letter-spacing: 0.05em; margin-bottom: 6px;
+}
+.login-sub { color: var(--muted); font-size: 12px; margin-bottom: 28px; }
+.field { margin-bottom: 14px; }
+.field label { display: block; font-size: 11px; color: var(--muted);
+               text-transform: uppercase; letter-spacing: .08em; margin-bottom: 5px; }
+.field input {
+  width: 100%; padding: 9px 12px; background: var(--bg);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  color: var(--text); font-size: 14px; outline: none;
+  transition: border-color .15s;
+}
+.field input:focus { border-color: var(--teal); }
+.btn-primary {
+  width: 100%; padding: 10px; background: var(--teal); color: #0d1117;
+  font-weight: 600; font-size: 14px; border-radius: var(--radius);
+  margin-top: 6px; transition: opacity .15s;
+}
+.btn-primary:hover { opacity: .85; }
+.login-err { color: var(--danger); font-size: 12px; margin-top: 10px; min-height: 16px; }
+
+/* ── APP SHELL ───────────────────────────────────────────────────────── */
+#app { display: none; height: 100vh; flex-direction: column; }
+#app.visible { display: flex; }
+
+/* top bar */
+.topbar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 0 16px; height: 48px; background: var(--surface);
+  border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+.topbar-logo { font-family: var(--mono); color: var(--teal); font-size: 15px;
+               font-weight: 500; letter-spacing: .06em; }
+.breadcrumb {
+  font-family: var(--mono); font-size: 12px; color: var(--muted);
+  flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.breadcrumb span { color: var(--teal); }
+.topbar-user { font-size: 12px; color: var(--muted); }
+.topbar-role {
+  font-family: var(--mono); font-size: 10px; padding: 2px 7px;
+  border-radius: 10px; border: 1px solid var(--border); color: var(--teal);
+  text-transform: uppercase; letter-spacing: .07em;
+}
+.btn-sm {
+  padding: 5px 12px; font-size: 12px; border-radius: var(--radius);
+  background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+  transition: border-color .15s;
+}
+.btn-sm:hover { border-color: var(--teal); color: var(--teal); }
+.btn-sm.danger:hover { border-color: var(--danger); color: var(--danger); }
+.btn-sm.active { border-color: var(--teal); color: var(--teal); background: var(--teal-dim); }
+
+/* body = sidebar + main */
+.body { display: flex; flex: 1; overflow: hidden; }
+
+/* ── SIDEBAR ─────────────────────────────────────────────────────────── */
+.sidebar {
+  width: var(--sidebar-w); background: var(--surface); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; overflow: hidden; flex-shrink: 0;
+}
+.sidebar-section { padding: 10px 8px 4px; }
+.sidebar-label {
+  font-size: 10px; color: var(--muted); text-transform: uppercase;
+  letter-spacing: .1em; padding: 0 8px; margin-bottom: 4px;
+}
+.sidebar-item {
+  display: flex; align-items: center; gap: 7px; padding: 6px 8px;
+  border-radius: var(--radius); cursor: pointer; color: var(--muted);
+  font-size: 13px; transition: background .1s, color .1s; user-select: none;
+}
+.sidebar-item:hover  { background: var(--surface2); color: var(--text); }
+.sidebar-item.active { background: var(--teal-dim); color: var(--teal); }
+.sidebar-item .icon  { font-size: 14px; flex-shrink: 0; }
+.sidebar-item .count {
+  margin-left: auto; font-family: var(--mono); font-size: 10px;
+  color: var(--muted); background: var(--bg); padding: 1px 5px;
+  border-radius: 8px;
+}
+.folder-children { padding-left: 16px; }
+.folder-add {
+  display: flex; align-items: center; gap: 6px; padding: 5px 8px;
+  font-size: 12px; color: var(--muted); cursor: pointer; border-radius: var(--radius);
+}
+.folder-add:hover { color: var(--teal); }
+.sidebar-divider { border: none; border-top: 1px solid var(--border); margin: 6px 12px; }
+
+/* ── MAIN PANEL ──────────────────────────────────────────────────────── */
+.main { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+
+/* toolbar above file table */
+.toolbar {
+  display: flex; align-items: center; gap: 8px; padding: 10px 16px;
+  border-bottom: 1px solid var(--border); flex-shrink: 0;
+  background: var(--surface);
+}
+.toolbar-title { font-size: 14px; font-weight: 600; flex: 1; }
+.passphrase-field {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 4px 10px;
+}
+.passphrase-field input {
+  background: transparent; border: none; outline: none;
+  color: var(--text); font-family: var(--mono); font-size: 12px; width: 180px;
+}
+.passphrase-field .lock { font-size: 13px; color: var(--muted); }
+.upload-btn {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--teal); color: #0d1117; font-weight: 600;
+  font-size: 12px; padding: 6px 14px; border-radius: var(--radius);
+  transition: opacity .15s;
+}
+.upload-btn:hover { opacity: .85; }
+#file-input { display: none; }
+
+/* upload progress area */
+.upload-progress-area {
+  padding: 8px 16px; background: var(--surface);
+  border-bottom: 1px solid var(--border); display: none;
+}
+.upload-progress-area.visible { display: block; }
+.upload-item { margin-bottom: 8px; }
+.upload-item-name { font-family: var(--mono); font-size: 12px; color: var(--text);
+                    margin-bottom: 3px; }
+.pbar { background: var(--border); border-radius: 3px; height: 4px; overflow: hidden; }
+.pbar-fill { background: var(--teal); height: 100%; width: 0%; transition: width .15s; }
+.upload-eta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.overall-eta { font-size: 12px; color: var(--teal); font-family: var(--mono);
+               padding-top: 4px; border-top: 1px solid var(--border); margin-top: 6px; }
+
+/* ── FILE TABLE ──────────────────────────────────────────────────────── */
+.file-table-wrap { flex: 1; padding: 0; }
+table { width: 100%; border-collapse: collapse; }
+thead th {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--muted); padding: 10px 16px; text-align: left;
+  border-bottom: 1px solid var(--border); font-weight: 500;
+  position: sticky; top: 0; background: var(--bg); z-index: 1;
+}
+tbody tr { border-bottom: 1px solid var(--border); transition: background .1s; }
+tbody tr:hover { background: var(--surface2); }
+tbody td { padding: 10px 16px; font-size: 13px; }
+.file-name { font-family: var(--mono); font-size: 13px; }
+.file-meta { font-size: 11px; color: var(--muted); font-family: var(--mono); }
+.version-badge {
+  font-family: var(--mono); font-size: 11px; padding: 2px 7px;
+  background: var(--teal-dim); color: var(--teal); border-radius: 10px;
+}
+.action-row { display: flex; gap: 6px; align-items: center; }
+.empty-state {
+  padding: 60px 0; text-align: center; color: var(--muted); font-size: 13px;
+}
+.empty-icon { font-size: 36px; margin-bottom: 10px; opacity: .4; }
+
+/* ── PANELS (versions, logs, trash, users) ───────────────────────────── */
+.panel { flex: 1; overflow-y: auto; padding: 16px; }
+.panel-header {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 16px;
+}
+.panel-title { font-size: 16px; font-weight: 600; }
+.panel-subtitle { font-size: 12px; color: var(--muted); font-family: var(--mono); }
+
+/* version list */
+.version-list { display: flex; flex-direction: column; gap: 8px; }
+.version-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px 14px;
+  display: flex; align-items: center; gap: 12px;
+}
+.version-card.current { border-color: var(--teal); }
+.version-no { font-family: var(--mono); font-size: 20px; color: var(--muted);
+              font-weight: 500; min-width: 36px; }
+.version-card.current .version-no { color: var(--teal); }
+.version-info { flex: 1; }
+.version-info .size { font-family: var(--mono); font-size: 12px; }
+.version-info .who { font-size: 12px; color: var(--muted); }
+.version-sha { font-family: var(--mono); font-size: 10px; color: var(--border);
+               margin-top: 3px; word-break: break-all; }
+.current-pill {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .07em;
+  padding: 2px 7px; border-radius: 10px; background: var(--teal-dim);
+  color: var(--teal); border: 1px solid var(--teal-mid); margin-right: 4px;
+}
+
+/* log table */
+.log-row { display: flex; gap: 10px; padding: 8px 0;
+           border-bottom: 1px solid var(--border); align-items: baseline; }
+.log-ts  { font-family: var(--mono); font-size: 11px; color: var(--muted); min-width: 140px; }
+.log-user{ font-family: var(--mono); font-size: 12px; color: var(--teal); min-width: 90px; }
+.log-action { font-size: 12px; font-weight: 500; min-width: 110px; }
+.log-detail { font-size: 12px; color: var(--muted); }
+.log-upload   { color: #58a6ff; }
+.log-download { color: var(--teal); }
+.log-delete   { color: var(--danger); }
+.log-login    { color: var(--warn); }
+.log-restore_version,.log-restore_from_trash { color: #a371f7; }
+
+/* trash list */
+.trash-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px 14px;
+  display: flex; align-items: center; gap: 12px; margin-bottom: 8px;
+}
+.trash-name { font-family: var(--mono); font-size: 13px; flex: 1; }
+.trash-who  { font-size: 12px; color: var(--muted); }
+
+/* user cards */
+.user-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px 14px;
+  display: flex; align-items: center; gap: 12px; margin-bottom: 8px;
+}
+.user-name { font-family: var(--mono); font-size: 13px; flex: 1; }
+.role-pill {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+  padding: 2px 8px; border-radius: 10px; border: 1px solid var(--border); color: var(--muted);
+}
+.role-pill.admin      { border-color: var(--warn); color: var(--warn); }
+.role-pill.read_write { border-color: #58a6ff; color: #58a6ff; }
+.role-pill.read_only  { border-color: var(--border); color: var(--muted); }
+
+/* inline form */
+.inline-form {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 10px 12px; margin-bottom: 14px;
+}
+.inline-form input, .inline-form select {
+  background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
+  color: var(--text); font-size: 13px; padding: 6px 10px; outline: none;
+  transition: border-color .15s;
+}
+.inline-form input:focus, .inline-form select:focus { border-color: var(--teal); }
+.inline-form select option { background: var(--surface); }
+
+/* modal */
+.modal-backdrop {
+  position: fixed; inset: 0; background: #0009; z-index: 100;
+  display: flex; align-items: center; justify-content: center;
+}
+.modal {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 24px; min-width: 320px; max-width: 480px; width: 90%;
+}
+.modal h3 { margin-bottom: 16px; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+
+/* toast */
+.toast {
+  position: fixed; bottom: 24px; right: 24px; z-index: 200;
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 10px 16px; font-size: 13px;
+  opacity: 0; transition: opacity .2s; pointer-events: none;
+}
+.toast.show { opacity: 1; pointer-events: auto; }
+.toast.ok  { border-color: var(--teal); color: var(--teal); }
+.toast.err { border-color: var(--danger); color: var(--danger); }
+
+/* scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<!-- ── LOGIN ──────────────────────────────────────────────────────────── -->
+<div id="login-screen">
+  <div class="login-box">
+    <div class="login-logo">⬡ TeamVault</div>
+    <div class="login-sub">private encrypted file storage</div>
+    <div class="field">
+      <label>Username</label>
+      <input id="l-user" placeholder="your username" autocomplete="username">
+    </div>
+    <div class="field">
+      <label>Password</label>
+      <input id="l-pass" type="password" placeholder="••••••••" autocomplete="current-password">
+    </div>
+    <button class="btn-primary" onclick="doLogin()">Sign in</button>
+    <div class="login-err" id="login-err"></div>
+  </div>
+</div>
+
+<!-- ── APP ────────────────────────────────────────────────────────────── -->
+<div id="app">
+  <!-- top bar -->
+  <div class="topbar">
+    <div class="topbar-logo">⬡ TeamVault</div>
+    <div class="breadcrumb" id="breadcrumb">~/</div>
+    <div class="topbar-user" id="topbar-user"></div>
+    <span class="topbar-role" id="topbar-role"></span>
+    <button class="btn-sm" onclick="logout()">Sign out</button>
+  </div>
+
+  <div class="body">
+    <!-- sidebar -->
+    <div class="sidebar">
+      <div class="sidebar-section">
+        <div class="sidebar-label">Views</div>
+        <div class="sidebar-item active" id="nav-files" onclick="showView('files')">
+          <span class="icon">📁</span> Files
+        </div>
+        <div class="sidebar-item" id="nav-trash" onclick="showView('trash')">
+          <span class="icon">🗑</span> Trash
+          <span class="count" id="trash-count">—</span>
+        </div>
+        <div class="sidebar-item" id="nav-logs" onclick="showView('logs')">
+          <span class="icon">📋</span> Activity
+        </div>
+        <div class="sidebar-item" id="nav-users" onclick="showView('users')">
+          <span class="icon">👥</span> Team
+        </div>
+      </div>
+
+      <hr class="sidebar-divider">
+
+      <div class="sidebar-section" style="flex:1;overflow-y:auto">
+        <div class="sidebar-label">Folders</div>
+        <div class="sidebar-item active" id="folder-root" onclick="navigateFolder(null,'~')">
+          <span class="icon">🏠</span> Root
+        </div>
+        <div id="folder-tree" class="folder-children"></div>
+        <div class="folder-add" id="folder-add-btn" onclick="promptNewFolder(null)">
+          <span>＋</span> New folder
+        </div>
+      </div>
+    </div>
+
+    <!-- main -->
+    <div class="main" id="main-panel">
+      <!-- files view -->
+      <div id="view-files">
+        <div class="toolbar">
+          <div class="toolbar-title" id="folder-title">Root</div>
+          <div class="passphrase-field">
+            <span class="lock">🔑</span>
+            <input id="team-key" type="password" placeholder="team passphrase">
+          </div>
+          <button class="upload-btn" onclick="document.getElementById('file-input').click()">
+            ↑ Upload
+          </button>
+          <input type="file" id="file-input" multiple onchange="uploadFiles()">
+        </div>
+
+        <div class="upload-progress-area" id="progress-area">
+          <div id="upload-items"></div>
+          <div class="overall-eta" id="overall-eta"></div>
+        </div>
+
+        <div class="file-table-wrap">
+          <table id="file-table">
+            <thead>
+              <tr>
+                <th>Name</th><th>Size</th><th>Version</th>
+                <th>Uploaded by</th><th>Modified</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="file-tbody"></tbody>
+          </table>
+          <div class="empty-state" id="empty-files" style="display:none">
+            <div class="empty-icon">📂</div>
+            No files here yet — upload one above.
+          </div>
+        </div>
+      </div>
+
+      <!-- versions panel -->
+      <div id="view-versions" style="display:none">
+        <div class="panel">
+          <div class="panel-header">
+            <button class="btn-sm" onclick="showView('files')">← Back</button>
+            <div>
+              <div class="panel-title" id="versions-filename"></div>
+              <div class="panel-subtitle" id="versions-subtitle"></div>
+            </div>
+          </div>
+          <div class="version-list" id="version-list"></div>
+        </div>
+      </div>
+
+      <!-- trash panel -->
+      <div id="view-trash" style="display:none">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">🗑 Trash</div>
+          </div>
+          <div id="trash-list"></div>
+          <div class="empty-state" id="empty-trash" style="display:none">
+            <div class="empty-icon">✨</div>
+            Trash is empty.
+          </div>
+        </div>
+      </div>
+
+      <!-- logs panel -->
+      <div id="view-logs" style="display:none">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">📋 Activity log</div>
+            <button class="btn-sm" onclick="loadLogs()">↻ Refresh</button>
+          </div>
+          <div id="log-list"></div>
+        </div>
+      </div>
+
+      <!-- users panel -->
+      <div id="view-users" style="display:none">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">👥 Team members</div>
+          </div>
+          <div class="inline-form" id="new-user-form" style="display:none">
+            <input id="nu-username" placeholder="Username">
+            <input id="nu-password" type="password" placeholder="Password">
+            <select id="nu-role">
+              <option value="read_only">Read only</option>
+              <option value="read_write">Read/Write</option>
+              <option value="admin">Admin</option>
+            </select>
+            <button class="btn-sm active" onclick="createUser()">Add user</button>
+            <button class="btn-sm" onclick="document.getElementById('new-user-form').style.display='none'">Cancel</button>
+          </div>
+          <button class="btn-sm active" style="margin-bottom:14px"
+            onclick="document.getElementById('new-user-form').style.display='flex'">
+            ＋ New team member
+          </button>
+          <div id="user-list"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+const API = "/api";
+let currentUser = null;
+let currentFolderId = null;
+let currentFolderName = "~";
+let currentView = "files";
+let versionFileId = null;
+let folderMap = {};   // id -> {id, name, parent_id}
+
+// ── UTILS ───────────────────────────────────────────────────────────────
+function toast(msg, type = "ok") {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.className = `toast ${type} show`;
+  clearTimeout(t._tid);
+  t._tid = setTimeout(() => t.className = "toast", 2800);
+}
+
+function fmt(bytes) {
+  if (bytes < 1000) return bytes + " B";
+  if (bytes < 1e6) return (bytes / 1000).toFixed(1) + " KB";
+  if (bytes < 1e9) return (bytes / 1e6).toFixed(1) + " MB";
+  return (bytes / 1e9).toFixed(2) + " GB";
+}
+
+function fmtDate(ts) {
+  if (!ts) return "—";
+  return new Date(ts * 1000).toLocaleString(undefined, {
+    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"
+  });
+}
+
+function fmtLogDate(ts) {
+  return new Date(ts * 1000).toLocaleString(undefined, {
+    month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit", second: "2-digit"
+  });
+}
+
+// ── AUTH ────────────────────────────────────────────────────────────────
+async function doLogin() {
+  const username = document.getElementById("l-user").value.trim();
+  const password = document.getElementById("l-pass").value;
+  const r = await fetch(API + "/login", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({username, password})
+  });
+  if (r.ok) {
+    currentUser = await r.json();
+    document.getElementById("login-screen").style.display = "none";
+    document.getElementById("app").classList.add("visible");
+    document.getElementById("topbar-user").textContent = currentUser.username;
+    document.getElementById("topbar-role").textContent = currentUser.role;
+    // hide admin-only nav items for non-admins
+    if (currentUser.role !== "admin") {
+      document.getElementById("nav-trash").style.display = "none";
+      document.getElementById("nav-logs").style.display  = "none";
+      document.getElementById("nav-users").style.display = "none";
+    }
+    await loadFolders();
+    refreshFiles();
+  } else {
+    document.getElementById("login-err").textContent = "Invalid credentials";
+  }
+}
+
+document.addEventListener("keydown", e => {
+  if (e.key === "Enter" && document.getElementById("login-screen").style.display !== "none") {
+    doLogin();
+  }
+});
+
+async function logout() {
+  await fetch(API + "/logout", {method: "POST"});
+  location.reload();
+}
+
+// ── VIEW SWITCHING ──────────────────────────────────────────────────────
+function showView(name) {
+  currentView = name;
+  ["files","versions","trash","logs","users"].forEach(v => {
+    document.getElementById(`view-${v}`).style.display = v === name ? "" : "none";
+  });
+  ["files","trash","logs","users"].forEach(v => {
+    document.getElementById(`nav-${v}`)?.classList.toggle("active", v === name);
+  });
+  if (name === "logs")  loadLogs();
+  if (name === "trash") loadTrash();
+  if (name === "users") loadUsers();
+}
+
+// ── BREADCRUMB ──────────────────────────────────────────────────────────
+function buildPath(folderId) {
+  if (!folderId) return "~/";
+  const parts = [];
+  let cur = folderId;
+  while (cur && folderMap[cur]) {
+    parts.unshift(folderMap[cur].name);
+    cur = folderMap[cur].parent_id;
+  }
+  return "~/" + parts.join("/") + "/";
+}
+
+function updateBreadcrumb() {
+  const path = buildPath(currentFolderId);
+  const bc = document.getElementById("breadcrumb");
+  const idx = path.lastIndexOf("/", path.length - 2);
+  if (idx <= 0) {
+    bc.innerHTML = `<span>${path}</span>`;
+  } else {
+    bc.innerHTML = `${path.slice(0, idx + 1)}<span>${path.slice(idx + 1)}</span>`;
+  }
+}
+
+// ── FOLDERS ─────────────────────────────────────────────────────────────
+async function loadFolders() {
+  const r = await fetch(API + "/folders");
+  if (!r.ok) return;
+  const folders = await r.json();
+  folderMap = {};
+  folders.forEach(f => { folderMap[f.id] = f; });
+  renderFolderTree(folders);
+}
+
+function renderFolderTree(folders) {
+  const tree = document.getElementById("folder-tree");
+  tree.innerHTML = "";
+  const roots = folders.filter(f => !f.parent_id);
+  const children = {};
+  folders.filter(f => f.parent_id).forEach(f => {
+    (children[f.parent_id] = children[f.parent_id] || []).push(f);
+  });
+  roots.forEach(f => tree.appendChild(makeFolderNode(f, children, 0)));
+}
+
+function makeFolderNode(folder, children, depth) {
+  const wrap = document.createElement("div");
+  const item = document.createElement("div");
+  item.className = "sidebar-item" + (currentFolderId === folder.id ? " active" : "");
+  item.style.paddingLeft = (8 + depth * 12) + "px";
+  item.innerHTML = `<span class="icon">📁</span> ${folder.name}`;
+  item.onclick = () => navigateFolder(folder.id, folder.name);
+  wrap.appendChild(item);
+  if (children[folder.id]) {
+    children[folder.id].forEach(c => wrap.appendChild(makeFolderNode(c, children, depth + 1)));
+  }
+  // add subfolder button (admin/rw only)
+  if (currentUser && currentUser.role !== "read_only") {
+    const add = document.createElement("div");
+    add.className = "folder-add";
+    add.style.paddingLeft = (8 + (depth + 1) * 12) + "px";
+    add.innerHTML = `<span>＋</span> subfolder`;
+    add.onclick = (e) => { e.stopPropagation(); promptNewFolder(folder.id); };
+    wrap.appendChild(add);
+  }
+  return wrap;
+}
+
+function navigateFolder(id, name) {
+  currentFolderId = id;
+  currentFolderName = name;
+  document.getElementById("folder-title").textContent = name;
+  updateBreadcrumb();
+  // clear active on all sidebar items; set on chosen folder
+  document.querySelectorAll(".sidebar-item").forEach(el => el.classList.remove("active"));
+  const rootItem = document.getElementById("folder-root");
+  if (id === null) {
+    rootItem.classList.add("active");
+    document.getElementById("nav-files").classList.add("active");
+  } else {
+    document.getElementById("nav-files").classList.add("active");
+  }
+  // re-render tree to show active state
+  loadFolders();
+  showView("files");
+  refreshFiles();
+}
+
+async function promptNewFolder(parentId) {
+  const name = prompt("Folder name:");
+  if (!name) return;
+  const r = await fetch(API + "/folders", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({name, parent_id: parentId})
+  });
+  if (r.ok) { await loadFolders(); toast("Folder created"); }
+  else { toast("Could not create folder", "err"); }
+}
+
+// ── ENCRYPTION ──────────────────────────────────────────────────────────
+async function deriveKey(passphrase) {
+  const enc = new TextEncoder();
+  const km = await crypto.subtle.importKey("raw", enc.encode(passphrase), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey(
+    { name: "PBKDF2", salt: enc.encode("teamvault-fixed-salt"), iterations: 200000, hash: "SHA-256" },
+    km, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]
+  );
+}
+
+async function encryptFile(file, passphrase) {
+  const key = await deriveKey(passphrase);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, await file.arrayBuffer());
+  const out = new Uint8Array(12 + ct.byteLength);
+  out.set(iv); out.set(new Uint8Array(ct), 12);
+  return new Blob([out]);
+}
+
+async function sha256Hex(blob) {
+  const h = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+  return Array.from(new Uint8Array(h)).map(b => b.toString(16).padStart(2,"0")).join("");
+}
+
+// ── UPLOAD ──────────────────────────────────────────────────────────────
+async function uploadFiles() {
+  const passphrase = document.getElementById("team-key").value;
+  if (!passphrase) { toast("Enter team passphrase first", "err"); return; }
+  const files = document.getElementById("file-input").files;
+  if (!files.length) return;
+
+  const area = document.getElementById("progress-area");
+  const itemsEl = document.getElementById("upload-items");
+  area.classList.add("visible");
+  itemsEl.innerHTML = "";
+
+  let totalBytes = 0, sentBytes = 0;
+  const prepared = [];
+  for (const file of files) {
+    const encrypted = await encryptFile(file, passphrase);
+    prepared.push({ file, encrypted });
+    totalBytes += encrypted.size;
+  }
+  const t0 = Date.now();
+
+  await Promise.all(prepared.map(({ file, encrypted }) =>
+    uploadOne(file, encrypted, d => {
+      sentBytes += d;
+      const elapsed = (Date.now() - t0) / 1000;
+      const speed = sentBytes / Math.max(elapsed, .01);
+      const eta = Math.round((totalBytes - sentBytes) / Math.max(speed, 1));
+      document.getElementById("overall-eta").textContent =
+        `${fmt(sentBytes)} / ${fmt(totalBytes)}  —  ETA ${eta}s`;
+    })
+  ));
+
+  area.classList.remove("visible");
+  document.getElementById("file-input").value = "";
+  refreshFiles();
+  toast(`Uploaded ${files.length} file(s)`);
+}
+
+function uploadOne(file, encBlob, onProgress) {
+  return new Promise(async resolve => {
+    const sha256 = await sha256Hex(encBlob);
+    const div = document.createElement("div");
+    div.className = "upload-item";
+    const pid = "p_" + Math.random().toString(36).slice(2);
+    const eid = "e_" + Math.random().toString(36).slice(2);
+    div.innerHTML = `<div class="upload-item-name">${file.name}</div>
+      <div class="pbar"><div class="pbar-fill" id="${pid}"></div></div>
+      <div class="upload-eta" id="${eid}"></div>`;
+    document.getElementById("upload-items").appendChild(div);
+
+    const xhr = new XMLHttpRequest();
+    const t0 = Date.now();
+    let lastLoaded = 0;
+    xhr.upload.onprogress = e => {
+      const d = e.loaded - lastLoaded; lastLoaded = e.loaded;
+      onProgress(d);
+      const pct = Math.round(e.loaded / e.total * 100);
+      document.getElementById(pid).style.width = pct + "%";
+      const speed = e.loaded / Math.max((Date.now() - t0) / 1000, .01);
+      const eta = Math.round((e.total - e.loaded) / Math.max(speed, 1));
+      document.getElementById(eid).textContent = `${pct}%  —  ETA ${eta}s`;
+    };
+    xhr.onload = () => resolve();
+    xhr.open("POST", API + "/files/upload");
+    const fd = new FormData();
+    fd.append("file", encBlob, file.name);
+    fd.append("filename", file.name);
+    fd.append("folder_id", currentFolderId || "");
+    fd.append("sha256", sha256);
+    xhr.send(fd);
+  });
+}
+
+// ── FILE LIST ───────────────────────────────────────────────────────────
+async function refreshFiles() {
+  const fid = currentFolderId !== null ? `folder_id=${currentFolderId}` : "folder_id=";
+  const r = await fetch(`${API}/files?${fid}`);
+  if (!r.ok) return;
+  const files = await r.json();
+  const tbody = document.getElementById("file-tbody");
+  const empty = document.getElementById("empty-files");
+  tbody.innerHTML = "";
+  if (!files.length) { empty.style.display = ""; return; }
+  empty.style.display = "none";
+
+  for (const f of files) {
+    const v = f.current_version;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td><span class="file-name">${f.filename}</span></td>
+      <td><span class="file-meta">${v ? fmt(v.size_bytes) : "—"}</span></td>
+      <td><span class="version-badge">v${v ? v.version_no : "—"}</span></td>
+      <td><span class="file-meta">${v ? (v.uploaded_by_name || "—") : "—"}</span></td>
+      <td><span class="file-meta">${v ? fmtDate(v.uploaded_at) : "—"}</span></td>
+      <td>
+        <div class="action-row">
+          <button class="btn-sm" onclick="downloadFile(${f.id},'${f.filename.replace(/'/g,"\\'")}')">↓ Download</button>
+          <button class="btn-sm" onclick="openVersions(${f.id},'${f.filename.replace(/'/g,"\\'")}')">History</button>
+          ${currentUser?.role === "admin"
+            ? `<button class="btn-sm danger" onclick="deleteFile(${f.id})">Delete</button>`
+            : ""}
+        </div>
+      </td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+async function downloadFile(fileId, filename) {
+  const passphrase = document.getElementById("team-key").value;
+  if (!passphrase) { toast("Enter team passphrase first", "err"); return; }
+  toast("Downloading…");
+  const r = await fetch(`${API}/files/${fileId}/download`);
+  if (!r.ok) { toast("Download failed", "err"); return; }
+  const ct = await r.arrayBuffer();
+  const iv = new Uint8Array(ct.slice(0, 12));
+  const key = await deriveKey(passphrase);
+  let plain;
+  try {
+    plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct.slice(12));
+  } catch {
+    toast("Decryption failed — wrong passphrase?", "err"); return;
+  }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([plain]));
+  a.download = filename; a.click();
+  toast(`Downloaded ${filename}`);
+}
+
+async function deleteFile(fileId) {
+  if (!confirm("Move this file to trash?")) return;
+  const r = await fetch(`${API}/files/${fileId}`, {method: "DELETE"});
+  if (r.ok) { refreshFiles(); toast("Moved to trash"); updateTrashCount(); }
+  else toast("Delete failed", "err");
+}
+
+// ── VERSION HISTORY ─────────────────────────────────────────────────────
+async function openVersions(fileId, filename) {
+  versionFileId = fileId;
+  document.getElementById("versions-filename").textContent = filename;
+  document.getElementById("versions-subtitle").textContent = `file id #${fileId}`;
+  showView("versions");
+  await loadVersions(fileId);
+}
+
+async function loadVersions(fileId) {
+  const r = await fetch(`${API}/files/${fileId}/versions`);
+  if (!r.ok) return;
+  const versions = await r.json();
+  const list = document.getElementById("version-list");
+  list.innerHTML = "";
+  for (const v of versions) {
+    const card = document.createElement("div");
+    card.className = "version-card" + (v.is_current ? " current" : "");
+    card.innerHTML = `
+      <div class="version-no">v${v.version_no}</div>
+      <div class="version-info">
+        <div class="size">${fmt(v.size_bytes)}</div>
+        <div class="who">by ${v.uploaded_by_name || "—"} · ${fmtDate(v.uploaded_at)}</div>
+        <div class="version-sha">${v.sha256}</div>
+      </div>
+      <div class="action-row">
+        ${v.is_current
+          ? `<span class="current-pill">Current</span>`
+          : (currentUser?.role !== "read_only"
+              ? `<button class="btn-sm" onclick="restoreVersion(${fileId},${v.version_no})">↩ Restore</button>`
+              : "")}
+      </div>`;
+    list.appendChild(card);
+  }
+}
+
+async function restoreVersion(fileId, versionNo) {
+  const r = await fetch(`${API}/files/${fileId}/restore/${versionNo}`, {method: "POST"});
+  if (r.ok) { await loadVersions(fileId); toast(`Restored to v${versionNo}`); }
+  else toast("Restore failed", "err");
+}
+
+// ── TRASH ────────────────────────────────────────────────────────────────
+async function loadTrash() {
+  const r = await fetch(API + "/trash");
+  if (!r.ok) return;
+  const items = await r.json();
+  const list = document.getElementById("trash-list");
+  const empty = document.getElementById("empty-trash");
+  document.getElementById("trash-count").textContent = items.length || "—";
+  list.innerHTML = "";
+  if (!items.length) { empty.style.display = ""; return; }
+  empty.style.display = "none";
+  for (const f of items) {
+    const card = document.createElement("div");
+    card.className = "trash-card";
+    card.innerHTML = `
+      <span class="trash-name">${f.filename}</span>
+      <span class="trash-who">deleted by ${f.deleted_by_name || "—"} · ${fmtDate(f.deleted_at)}</span>
+      <div class="action-row">
+        <button class="btn-sm" onclick="restoreFromTrash(${f.id})">↩ Restore</button>
+        <button class="btn-sm danger" onclick="hardDelete(${f.id})">Destroy</button>
+      </div>`;
+    list.appendChild(card);
+  }
+}
+
+async function updateTrashCount() {
+  if (currentUser?.role !== "admin") return;
+  const r = await fetch(API + "/trash");
+  if (r.ok) {
+    const items = await r.json();
+    document.getElementById("trash-count").textContent = items.length || "—";
+  }
+}
+
+async function restoreFromTrash(fileId) {
+  const r = await fetch(`${API}/trash/${fileId}/restore`, {method: "POST"});
+  if (r.ok) { loadTrash(); refreshFiles(); toast("File restored"); }
+  else toast("Restore failed", "err");
+}
+
+async function hardDelete(fileId) {
+  if (!confirm("Permanently destroy this file and all versions? This cannot be undone.")) return;
+  const r = await fetch(`${API}/trash/${fileId}`, {method: "DELETE"});
+  if (r.ok) { loadTrash(); toast("File permanently destroyed"); }
+  else toast("Hard delete failed", "err");
+}
+
+// ── LOGS ─────────────────────────────────────────────────────────────────
+async function loadLogs() {
+  const r = await fetch(API + "/logs?limit=300");
+  if (!r.ok) return;
+  const logs = await r.json();
+  const list = document.getElementById("log-list");
+  list.innerHTML = "";
+  for (const l of logs) {
+    const row = document.createElement("div");
+    row.className = "log-row";
+    row.innerHTML = `
+      <span class="log-ts">${fmtLogDate(l.ts)}</span>
+      <span class="log-user">${l.username || "—"}</span>
+      <span class="log-action log-${l.action}">${l.action}</span>
+      <span class="log-detail">${[l.target, l.detail].filter(Boolean).join(" · ")}</span>`;
+    list.appendChild(row);
+  }
+}
+
+// ── USERS ─────────────────────────────────────────────────────────────────
+async function loadUsers() {
+  const r = await fetch(API + "/users");
+  if (!r.ok) return;
+  const users = await r.json();
+  const list = document.getElementById("user-list");
+  list.innerHTML = "";
+  for (const u of users) {
+    const card = document.createElement("div");
+    card.className = "user-card";
+    const isSelf = u.id === currentUser?.id;
+    card.innerHTML = `
+      <span class="user-name">${u.username}${isSelf ? " <span style='color:var(--muted);font-size:11px'>(you)</span>" : ""}</span>
+      <span class="role-pill ${u.role}">${u.role.replace("_", " ")}</span>
+      <span style="font-size:12px;color:var(--muted)">since ${fmtDate(u.created_at)}</span>
+      ${!isSelf ? `<button class="btn-sm danger" onclick="deleteUser(${u.id},'${u.username}')">Remove</button>` : ""}`;
+    list.appendChild(card);
+  }
+}
+
+async function createUser() {
+  const username = document.getElementById("nu-username").value.trim();
+  const password = document.getElementById("nu-password").value;
+  const role = document.getElementById("nu-role").value;
+  if (!username || !password) { toast("Fill in all fields", "err"); return; }
+  const r = await fetch(API + "/users", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({username, password, role})
+  });
+  if (r.ok) {
+    document.getElementById("nu-username").value = "";
+    document.getElementById("nu-password").value = "";
+    document.getElementById("new-user-form").style.display = "none";
+    loadUsers(); toast(`Created user ${username}`);
+  } else {
+    const d = await r.json(); toast(d.error || "Failed", "err");
+  }
+}
+
+async function deleteUser(id, name) {
+  if (!confirm(`Remove ${name} from the team?`)) return;
+  const r = await fetch(`${API}/users/${id}`, {method: "DELETE"});
+  if (r.ok) { loadUsers(); toast(`Removed ${name}`); }
+  else toast("Failed to remove user", "err");
+}
+
+// ── INIT ─────────────────────────────────────────────────────────────────
+updateBreadcrumb();
+// Check if already logged in (session cookie)
+fetch(API + "/me").then(async r => {
+  if (r.ok) {
+    currentUser = await r.json();
+    document.getElementById("login-screen").style.display = "none";
+    document.getElementById("app").classList.add("visible");
+    document.getElementById("topbar-user").textContent = currentUser.username;
+    document.getElementById("topbar-role").textContent = currentUser.role;
+    if (currentUser.role !== "admin") {
+      document.getElementById("nav-trash").style.display = "none";
+      document.getElementById("nav-logs").style.display  = "none";
+      document.getElementById("nav-users").style.display = "none";
+    }
+    await loadFolders();
+    refreshFiles();
+    updateTrashCount();
+  }
+});
+</script>
+</body>
+</html>
