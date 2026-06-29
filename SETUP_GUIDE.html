@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>VaultX Setup Guide</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font-sans,system-ui,sans-serif);color:var(--color-text-primary,#111);background:var(--color-background-tertiary,#f8f8f8);font-size:14px;line-height:1.6}
+.wrap{max-width:720px;margin:0 auto;padding:24px 20px 60px}
+h1{font-size:22px;font-weight:500;margin-bottom:4px}
+.tagline{font-size:13px;color:var(--color-text-secondary,#666);margin-bottom:28px}
+.toc{background:var(--color-background-primary,#fff);border:0.5px solid var(--color-border-tertiary,#e0e0e0);border-radius:12px;padding:14px 18px;margin-bottom:28px}
+.toc-title{font-size:12px;font-weight:500;color:var(--color-text-secondary,#666);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px}
+.toc-list{list-style:none;display:grid;grid-template-columns:1fr 1fr;gap:4px 24px}
+.toc-list li{font-size:13px}
+.toc-list a{color:var(--color-text-info,#0066cc);text-decoration:none}
+.toc-list a:hover{text-decoration:underline}
+.phase{margin-bottom:32px;scroll-margin-top:16px}
+.phase-head{display:flex;align-items:flex-start;gap:12px;margin-bottom:14px}
+.ph-badge{min-width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:500;flex-shrink:0;margin-top:1px}
+.ph-active{background:var(--color-background-info,#e8f0fe);color:var(--color-text-info,#0066cc)}
+.ph-done{background:var(--color-background-success,#e8f5e9);color:var(--color-text-success,#1a7f37)}
+.ph-warn{background:var(--color-background-warning,#fff8e1);color:var(--color-text-warning,#a66200)}
+.ph-neutral{background:var(--color-background-secondary,#f5f5f5);color:var(--color-text-secondary,#666)}
+.ph-info{flex:1}
+.ph-title{font-size:16px;font-weight:500;line-height:1.3}
+.ph-sub{font-size:13px;color:var(--color-text-secondary,#666);margin-top:3px;line-height:1.5}
+.block{background:var(--color-background-primary,#fff);border:0.5px solid var(--color-border-tertiary,#e0e0e0);border-radius:12px;overflow:hidden;margin-bottom:10px}
+.blabel{display:flex;align-items:center;gap:8px;padding:9px 14px;font-size:12px;font-weight:500;color:var(--color-text-secondary,#666);background:var(--color-background-secondary,#f5f5f5);border-bottom:0.5px solid var(--color-border-tertiary,#e0e0e0)}
+pre{margin:0;padding:13px 16px;font-family:var(--font-mono,monospace);font-size:12px;line-height:1.85;overflow-x:auto;white-space:pre;background:var(--color-background-primary,#fff)}
+.c{color:var(--color-text-tertiary,#999)}
+.v{color:var(--color-text-success,#1a7f37)}
+.k{color:var(--color-text-info,#0066cc)}
+.alert{display:flex;gap:9px;align-items:flex-start;padding:10px 14px;font-size:12px;line-height:1.6;color:var(--color-text-secondary,#666);border-top:0.5px solid var(--color-border-tertiary,#e0e0e0)}
+.al-icon{font-size:15px;flex-shrink:0;margin-top:1px}
+.al-warn .al-icon{color:var(--color-text-warning,#a66200)}
+.al-info .al-icon{color:var(--color-text-info,#0066cc)}
+.al-ok .al-icon{color:var(--color-text-success,#1a7f37)}
+.al-danger .al-icon{color:var(--color-text-danger,#c00)}
+.tree{background:var(--color-background-secondary,#f5f5f5);border:0.5px solid var(--color-border-tertiary,#e0e0e0);border-radius:12px;padding:14px 18px;font-family:var(--font-mono,monospace);font-size:12px;line-height:2.1;margin-bottom:10px}
+.f-dir{color:var(--color-text-secondary,#666)}
+.f-py{color:var(--color-text-info,#0066cc)}
+.f-ht{color:var(--color-text-success,#1a7f37)}
+.f-nw{color:var(--color-text-warning,#a66200)}
+.f-db{color:var(--color-text-tertiary,#999)}
+.f-cm{color:var(--color-text-tertiary,#999);font-size:11px}
+.steps .row{display:flex;align-items:flex-start;gap:10px;padding:11px 14px;border-bottom:0.5px solid var(--color-border-tertiary,#e0e0e0);font-size:13px;line-height:1.6}
+.steps .row:last-child{border-bottom:none}
+.sn{min-width:22px;height:22px;border-radius:50%;background:var(--color-background-info,#e8f0fe);color:var(--color-text-info,#0066cc);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:500;flex-shrink:0;margin-top:2px}
+.srow-text code{font-family:var(--font-mono,monospace);font-size:11px;background:var(--color-background-secondary,#f5f5f5);padding:1px 5px;border-radius:4px;border:0.5px solid var(--color-border-tertiary,#e0e0e0)}
+.checks .crow{display:flex;align-items:flex-start;gap:10px;padding:10px 14px;border-bottom:0.5px solid var(--color-border-tertiary,#e0e0e0);font-size:13px;line-height:1.55}
+.checks .crow:last-child{border-bottom:none}
+.ck-icon{color:var(--color-text-success,#1a7f37);font-size:16px;flex-shrink:0;margin-top:1px}
+.tbl{width:100%;border-collapse:collapse;font-size:13px}
+.tbl th{text-align:left;padding:9px 13px;font-weight:500;color:var(--color-text-secondary,#666);border-bottom:0.5px solid var(--color-border-tertiary,#e0e0e0);font-size:12px}
+.tbl td{padding:9px 13px;border-bottom:0.5px solid var(--color-border-tertiary,#e0e0e0);vertical-align:top}
+.tbl tr:last-child td{border-bottom:none}
+.tbl td:first-child{font-family:var(--font-mono,monospace);font-size:11px;color:var(--color-text-info,#0066cc);white-space:nowrap}
+.tbl td:nth-child(2){color:var(--color-text-secondary,#666);font-size:12px}
+.tbl td:last-child{color:var(--color-text-secondary,#666);font-size:12px}
+.perm-tbl td{padding:8px 12px}
+.perm-tbl td:first-child{font-family:var(--font-mono,monospace);font-size:11px;color:var(--color-text-primary,#111);white-space:nowrap}
+.perm-tbl td:not(:first-child){text-align:center;font-size:15px}
+.yes{color:var(--color-text-success,#1a7f37)}
+.no{color:var(--color-text-tertiary,#999)}
+.hr{border:none;border-top:0.5px solid var(--color-border-tertiary,#e0e0e0);margin:28px 0}
+.pill{display:inline-block;font-size:11px;font-weight:500;padding:2px 8px;border-radius:20px;background:var(--color-background-secondary,#f5f5f5);border:0.5px solid var(--color-border-tertiary,#e0e0e0);color:var(--color-text-secondary,#666);margin-right:4px}
+.pill-blue{background:var(--color-background-info,#e8f0fe);color:var(--color-text-info,#0066cc);border-color:transparent}
+.pill-green{background:var(--color-background-success,#e8f5e9);color:var(--color-text-success,#1a7f37);border-color:transparent}
+.pill-warn{background:var(--color-background-warning,#fff8e1);color:var(--color-text-warning,#a66200);border-color:transparent}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media(max-width:540px){.two-col{grid-template-columns:1fr}.toc-list{grid-template-columns:1fr}}
+</style>
+
+<div class="wrap">
+
+<h1>VaultX — Complete Setup Guide</h1>
+<p class="tagline">Step-by-step instructions from a fresh machine to a fully running system</p>
+
+<div class="toc">
+  <div class="toc-title">Contents</div>
+  <ul class="toc-list">
+    <li><a href="#s1">1 — Folder structure</a></li>
+    <li><a href="#s2">2 — Python setup</a></li>
+    <li><a href="#s3">3 — Packages</a></li>
+    <li><a href="#s4">4 — Telegram bot</a></li>
+    <li><a href="#s5">5 — Environment file</a></li>
+    <li><a href="#s6">6 — app.py changes</a></li>
+    <li><a href="#s7">7 — Start server</a></li>
+    <li><a href="#s8">8 — Master admin account</a></li>
+    <li><a href="#s9">9 — Create organisations</a></li>
+    <li><a href="#s10">10 — Roles and permissions</a></li>
+    <li><a href="#s11">11 — Impersonation</a></li>
+    <li><a href="#s12">12 — Storage warnings</a></li>
+    <li><a href="#s13">13 — VS Code extensions</a></li>
+    <li><a href="#s14">14 — Common errors</a></li>
+  </ul>
+</div>
+
+<div class="hr"></div>
+
+<div class="phase" id="s1">
+  <div class="phase-head">
+    <div class="ph-badge ph-active">1</div>
+    <div class="ph-info">
+      <div class="ph-title">Folder structure</div>
+      <div class="ph-sub">Create a single folder for the entire project. All files must be in the same directory — the server serves index.html and register.html directly from this location.</div>
+    </div>
+  </div>
+  <div class="tree">
+<span class="f-dir">vaultx/</span>
+├── <span class="f-py">app.py</span>              <span class="f-cm">← Flask backend — download from this chat</span>
+├── <span class="f-ht">index.html</span>          <span class="f-cm">← Main UI (login, dashboard, files) — download from this chat</span>
+├── <span class="f-ht">register.html</span>       <span class="f-cm">← Public registration form — download from this chat</span>
+├── <span class="f-nw">.env</span>                <span class="f-cm">← Your secret keys — you create this in step 5</span>
+├── <span class="f-nw">requirements.txt</span>    <span class="f-cm">← Python package list — you create this in step 3</span>
+├── <span class="f-nw">.gitignore</span>          <span class="f-cm">← Prevents secrets from being committed — you create this now</span>
+└── <span class="f-db">vaultx.db</span>           <span class="f-cm">← SQLite database — created automatically on first run</span>
+  </div>
+  <div class="block">
+    <div class="blabel">Create .gitignore now — paste this content</div>
+    <pre>.env
+vaultx.db
+venv/
+__pycache__/
+*.pyc</pre>
+    <div class="alert al-warn">
+      <span class="al-icon">⚠</span>
+      <span>Do this before anything else. If you accidentally commit .env to a public repository, your Telegram bot token is exposed and must be regenerated immediately from @BotFather.</span>
+    </div>
+  </div>
+</div>
+
+<div class="hr"></div>
+
+<div class="phase" id="s2">
+  <div class="phase-head">
+    <div class="ph-badge ph-active">2</div>
+    <div class="ph-info">
+      <div class="ph-title">Python setup and virtual environment</div>
+      <div class="ph-sub">A virtual environment isolates VaultX packages from everything else on your machine. This prevents version conflicts and keeps the project portable.</div>
+    </div>
+  </div>
+  <div class="block">
+    <div class="blabel">Open the VS Code terminal — press Ctrl + ` (backtick key, top-left of keyboard)</div>
+    <pre><span class="c"># Check Python version — you need 3.9 or higher</span>
+python --version
+
+<span class="c"># If you see "python: command not found" try:</span>
+python3 --version</pre>
+    <div class="alert al-warn">
+      <span class="al-icon">⚠</span>
+      <span>If Python is not installed, go to python.org, download the latest version for your OS, run the installer, then restart VS Code. On the Windows installer, check the box that says "Add Python to PATH".</span>
+    </div>
+  </div>
+  <div class="block">
+    <div class="blabel">Create and activate the virtual environment</div>
+    <pre><span class="c"># Step 1 — Create the virtual environment folder</span>
+python -m venv venv
+
+<span class="c"># Step 2 — Activate it</span>
+<span class="c">#   Windows (Command Prompt or PowerShell):</span>
+venv\Scripts\activate
+
+<span class="c">#   Mac or Linux:</span>
+source venv/bin/activate
+
+<span class="c"># Step 3 — Confirm activation</span>
+<span class="c"># You should now see (venv) at the start of the terminal line, like this:</span>
+<span class="v">(venv)</span> C:\Users\you\vaultx&gt;</pre>
+    <div class="alert al-info">
+      <span class="al-icon">ℹ</span>
+      <span>Every time you close VS Code and reopen it, you must run the activate command again before starting the server. The (venv) prefix disappears when the window closes.</span>
+    </div>
+  </div>
+</div>
+
+<div class="hr"></div>
+
+<div class="phase" id="s3">
+  <div class="phase-head">
+    <div class="ph-badge ph-active">3</div>
+    <div class="ph-info">
+      <div class="ph-title">Create requirements.txt and install packages</div>
+      <div class="ph-sub">Four Python libraries power the entire backend: Flask (web server), requests (Telegram API calls), cryptography (key generation), and python-dotenv (.env file loading).</div>
+    </div>
+  </div>
+  <div class="block">
+    <div class="blabel">Create requirements.txt inside your vaultx folder — paste this exact content</div>
+    <pre>flask
+requests
+cryptography
+python-dotenv</pre>
+  </div>
+  <div class="block">
+    <div class="blabel">Install all packages with one command</div>
+    <pre>pip install -r requirements.txt</pre>
+    <div class="alert al-ok">
+      <span class="al-icon">✓</span>
+      <span>You will see a long list of packages being downloaded and installed. Wait until you see "Successfully installed ..." before continuing. This takes about 30–60 seconds.</span>
+    </div>
+  </div>
+  <div class="block">
+    <div class="blabel">Verify installation</div>
+    <pre>pip show flask</pre>
+    <div class="alert al-ok">
+      <span class="al-icon">✓</span>
+      <span>If you see "Name: Flask" in the output, the installation worked. If you see an error, make sure (venv) is active in your terminal and run pip install -r requirements.txt again.</span>
+    </div>
+  </div>
+</div>
+
+<div class="hr"></div>
+
+<div class="phase" id="s4">
+  <div class="phase-head">
+    <div class="ph-badge ph-active">4</div>
+    <div class="ph-info">
+      <div class="ph-title">Set up your Telegram bot</div>
+      <div class="ph-sub">VaultX uses one Telegram bot to store encrypted files. Each organisation gets its own private channel. The bot uploads and downloads files to the correct channel for each organisation automatically.</div>
+    </div>
+  </div>
+  <div class="block">
+    <div class="blabel">Create the bot — follow these steps inside Telegram</div>
+    <div class="steps">
+      <div class="row"><div class="sn">1</div><div class="srow-text">Open Telegram on your phone or desktop and search for <code>@BotFather</code> in the search bar. Open the official BotFather chat (it has a blue checkmark).</div></div>
+      <div class="row"><div class="sn">2</div><div class="srow-text">Send the message <code>/newbot</code> to BotFather. It will ask you to choose a name for your bot (this is the display name, e.g. "VaultX Storage Bot") and then a username ending in "bot" (e.g. "vaultx_storage_bot").</div></div>
+      <div class="row"><div class="sn">3</div><div class="srow-text">BotFather will give you a bot token that looks like this: <code>123456789:ABCDefGhIJKlmNoPQRsTUVwxyz</code> — copy this token and save it somewhere safe. You will paste it into your .env file.</div></div>
+      <div class="row"><div class="sn">4</div><div class="srow-text">Now create a private channel for your first organisation. Tap the pencil/compose icon in Telegram → New Channel → give it a name (e.g. "Acme Corp Files") → set type to Private → tap Create.</div></div>
+      <div class="row"><div class="sn">5</div><div class="srow-text">Open the channel → tap the channel name at the top to open Channel Info → Administrators → Add Administrator → type your bot's username → select it → give it all permissions (especially "Post Messages" and "Delete Messages") → tap Save.</div></div>
+      <div class="row"><div class="sn">6</div><div class="srow-text">Type any message inside the channel (e.g. just "hello") — this is required so Telegram registers the channel in the API response.</div></div>
+      <div class="row"><div class="sn">7</div><div class="srow-text">Open this URL in your browser — replace YOUR_BOT_TOKEN with your actual token:</div></div>
+    </div>
+  </div>
+  <div class="block">
+    <div class="blabel">Get the channel ID from this URL</div>
+    <pre>https://api.telegram.org/bot<span class="v">YOUR_BOT_TOKEN</span>/getUpdates
+
+<span class="c"># In the JSON response that appears, look for a section like this:</span>
+<span class="c"># "chat": { "id": -1001234567890, "title": "Acme Corp Files", "type": "channel" }</span>
+<span class="c">#</span>
+<span class="c"># The negative number (-1001234567890) is your CHAT_ID for this channel.</span>
+<span class="c"># Copy it — you will enter it in VaultX when creating this organisation.</span></pre>
+    <div class="alert al-info">
+      <span class="al-icon">ℹ</span>
+      <span>Repeat steps 4–7 for every organisation you plan to create. Each organisation must have its own dedicated private channel with the bot added as admin. If you try to use the same channel for two organisations, files will be mixed together.</span>
+    </div>
+    <div class="alert al-warn">
+      <span class="al-icon">⚠</span>
+      <span>If the URL returns an empty result like {"ok":true,"result":[]}, you forgot to send a message in the channel. Go send any message in the channel, then refresh the URL.</span>
+    </div>
+  </div>
+</div>
+
+<div class="hr"></div>
+
+<div class="phase" id="s5">
+  <div class="phase-head">
+    <div class="ph-badge ph-active">5</div>
+    <div class="ph-info">
+      <div class="ph-title">Create your .env file</div>
+      <div class="ph-sub">The .env file stores your secret configuration. Python loads it automatically at startup. Never share this file or commit it to any repository.</div>
+    </div>
+  </div>
+  <div class="block">
+    <div class="blabel">Create a file named exactly .env in your vaultx folder — paste this and fill in your values</div>
+    <pre>VAULTX_BOT_TOKEN=<span class="v">paste_your_full_bot_token_here</span>
+VAULTX_SECRET=<span class="v">type_any_random_string_of_32_or_more_characters</span></pre>
+    <div class="alert al-info">
+      <span class="al-icon">ℹ</span>
+      <span>VAULTX_SECRET is used to sign session cookies. It can be any random string — the longer the better. Example: "kf82hd9sAp3nXq7rBwL4mYvZ0cTe1gUj". You only set this once and never change it (changing it logs everyone out).</span>
+    </div>
+    <div class="alert al-warn">
+      <span class="al-icon">⚠</span>
+      <span>On Windows, some editors add a .txt extension to .env and save it as ".env.txt". Check the file name in VS Code's file explorer. If it says ".env.txt", rename it to ".env" (no extension).</span>
+    </div>
+  </div>
+</div>
+
+<div class="hr"></div>
+
+<div class="phase" id="s6">
+  <div class="phase-head">
+    <div class="ph-badge ph-active">6</div>
+    <div class="ph-info">
+      <div class="ph-title">Add dotenv loading to app.py</div>
+      <div class="ph-sub">Two lines at the top of app.py tell Python to read your .env file automatically every time the server starts. Without these lines, your bot token and secret key will not load.</div>
+    </div>
+  </div>
+  <div class="block">
+    <div class="blabel">Open app.py in VS Code and check the top of the file — these 2 lines must be present</div>
+    <pre><span class="k">from</span> dotenv <span class="k">import</span> load_dotenv
+load_dotenv()   <span class="c"># reads .env automatically — must be before any os.environ.get() calls</span></pre>
+    <div class="alert al-ok">
+      <span class="al-icon">✓</span>
+      <span>If you downloaded app.py from this chat, these lines are already there. Just double check by opening app.py and looking at the first 10 lines.</span>
+    </div>
+  </div>
+</div>
+
+<div class="hr"></div>
+
+<div class="phase" id="s7">
+  <div class="phase-head">
+    <div class="ph-badge ph-active">7</div>
+    <div class="ph-info">
+      <div class="ph-title">Start the VaultX server</div>
+      <div class="ph-sub">Run the server and open the app in your browser. Keep the terminal open while you use VaultX — closing it stops the server.</div>
+    </div>
+  </div>
+  <div class="block">
+    <div class="blabel">Make sure (venv) is active, then run</div>
+    <pre>python app.py</pre>
+    <div class="alert al-ok">
+      <span class="al-icon">✓</span>
+      <span>You should see "VaultX → http://localhost:5000" printed in the terminal. The server is now running and waiting for requests.</span>
+    </div>
+    <div class="alert al-warn">
+      <span class="al-icon">⚠</span>
+      <span>Keep this terminal open. Do not close it or press Ctrl+C while using VaultX. To run other commands (like the bootstrap in the next step), open a second terminal tab with Ctrl+Shift+` or the + button in the terminal panel.</span>
+    </div>
+  </div>
+  <div class="block">
+    <div class="blabel">Open these URLs in your browser</div>
+    <pre>http://localhost:5000            <span class="c"># Main app — shows the VaultX login screen</span>
+http://localhost:5000/register  <span class="c"># Public registration page for new organisations</span></pre>
+  </div>
+</div>
+
+<div class="hr"></div>
+
+<div class="phase" id="s8">
+  <div class="phase-head">
+    <div class="ph-badge ph-active">8</div>
+    <div class="ph-info">
+      <div class="ph-title">Create the master admin account</div>
+      <div class="ph-sub">This is your personal account — the provider/owner with full access to all organisations. This command runs once only. After that the endpoint is permanently locked.</div>
+    </div>
+  </div>
+  <div class="block">
+    <div class="blabel">Open a second terminal tab and run this command</div>
+    <pre><span class="c"># Mac or Linux:</span>
+curl -X POST http://localhost:5000/api/bootstrap \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username":     "<span class="v">masteradmin</span>",
+    "password":     "<span class="v">choose-a-very-strong-password</span>",
+    "display_name": "<span class="v">Master Admin</span>"
+  }'</pre>
+    <div class="alert al-ok">
+      <span class="al-icon">✓</span>
+      <span>A successful response looks like: {"ok": true} — now go to localhost:5000 and log in with the username and password you just set.</span>
+    </div>
+  </div>
+  <div class="block">
+    <div class="blabel">Windows — PowerShell (if curl does not work)</div>
+    <pre>Invoke-RestMethod `
+  -Uri http://localhost:5000/api/bootstrap `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body '{"username":"<span class="v">masteradmin</span>","password":"<span class="v">strong-password</span>","display_name":"<span class="v">Master Admin</span>"}'</pre>
+    <div class="alert al-info">
+      <span class="al-icon">ℹ</span>
+      <span>Alternative: Install the VS Code extension "REST Client" by Huachao Mao. Create a file named test.http, paste the curl command above (without the backslashes), and click "Send Request" that appears above it.</span>
+    </div>
+  </div>
+  <div class="block">
+    <div class="blabel">What to do if you forgot your master admin password</div>
+    <pre><span class="c"># Stop the server with Ctrl+C
+# Delete the database file</span>
+del vaultx.db       <span class="c"># Windows</span>
+rm vaultx.db        <span class="c"># Mac or Linux</span>
+<span class="c"># Restart the server and run the bootstrap command again
+# Warning: this erases ALL users, organisations, and file metadata</span></pre>
+    <div class="alert al-danger">
+      <span class="al-icon">✕</span>
+      <span>The actual encrypted files in Telegram are not deleted, but VaultX loses all the metadata (which file belongs to which org, folder structure, version history). Only delete vaultx.db as a last resort.</span>
+    </div>
+  </div>
+</div>
+
+<div class="hr"></div>
+
+<div class="phase" id="s9">
+  <div class="phase-head">
+    <div class="ph-badge ph-active">9</div>
+    <div class="ph-info">
+      <div class="ph-title">Create organisations</div>
+      <div class="ph-sub">After logging in as master admin, go to the Organisations tab to create and manage organisations. Each organisation is completely isolated — users in one org cannot see anything from another org.</div>
+    </div>
+  </div>
+  <div class="block">
+    <div class="blabel">Fields required when creating a new organisation</div>
+    <pre><span class="c">Organisation name   →</span>  <span class="v">Acme Corp</span>
+                         <span class="c">The name shown everywhere in the UI</span>
+
+<span class="c">Admin username      →</span>  <span class="v">acme_admin</span>
+                         <span class="c">The login username for the organisation admin</span>
+
+<span class="c">Admin password      →</span>  <span class="v">strong-password-here</span>
+                         <span class="c">You create this and share it securely with the org</span>
+
+<span class="c">Admin display name  →</span>  <span class="v">Acme Corp Admin</span>
+                         <span class="c">The name shown in the dashboard header</span>
+
+<span class="c">Telegram channel ID →</span>  <span class="v">-1001234567890</span>
+                         <span class="c">The channel ID from step 4 for this specific org</span>
+
+<span class="c">Storage limit (GB)  →</span>  <span class="v">500</span>
+                         <span class="c">Maximum total storage for this org (warnings at 70%/90%/100%)</span>
+
+<span class="c">Plan                →</span>  <span class="v">standard</span>
+                         <span class="c">starter / standard / enterprise — for your records only</span>
+
+<span class="c">Team passphrase     →</span>  <span class="v">a-secret-encryption-key-for-this-org-only</span>
+                         <span class="c">Used by the browser to encrypt files before upload.
+                         Every user in this org must use this exact passphrase.
+                         Share it securely — not over email or chat.</span>
+
+<span class="c">Contact name/email  →</span>  <span class="v">optional</span>
+                         <span class="c">For your reference — the person you sold this plan to</span></pre>
+    <div class="alert al-info">
+      <span class="al-icon">ℹ</span>
+      <span>When you click Create, VaultX sends a test message to the Telegram channel to verify the bot can reach it. If verification fails, the organisation is not saved. Check that you added the bot as admin to that specific channel (step 4, step 5).</span>
+    </div>
+  </div>
+  <div class="block">
+    <div class="blabel">After creating an organisation — what to share with them</div>
+    <div class="steps">
+      <div class="row"><div class="sn">1</div><div class="srow-text">Share the <strong>login URL</strong>: <code>http://your-server-address:5000</code></div></div>
+      <div class="row"><div class="sn">2</div><div class="srow-text">Share the <strong>admin username and password</strong> you set — use a password manager like 1Password or Bitwarden, not email or chat</div></div>
+      <div class="row"><div class="sn">3</div><div class="srow-text">Share the <strong>team passphrase</strong> — this is the AES-256 encryption key. Every user in the org needs it to upload and download files. Share it in person or via a secure password manager — if anyone outside the org gets this, they can decrypt the files.</div></div>
+    </div>
+  </div>
+</div>
+
+<div class="hr"></div>
+
+<div class="phase" id="s10">
+  <div class="phase-head">
+    <div class="ph-badge ph-active">10</div>
+    <div class="ph-info">
+      <div class="ph-title">Roles and permissions system</div>
+      <div class="ph-sub">Three preset roles are created automatically for every organisation. Org admins can also create custom roles with any combination of the 13 available permissions.</div>
+    </div>
+  </div>
+  <div class="block">
+    <div class="blabel">Built-in preset roles — created automatically for every organisation</div>
+    <div style="overflow-x:auto">
+    <table class="tbl perm-tbl">
+      <thead><tr><th>Permission</th><th>read_only</th><th>read_write</th><th>admin</th></tr></thead>
+      <tbody>
+        <tr><td>upload</td><td class="no">✗</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+        <tr><td>download</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+        <tr><td>delete</td><td class="no">✗</td><td class="no">✗</td><td class="yes">✓</td></tr>
+        <tr><td>rename</td><td class="no">✗</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+        <tr><td>create_folder</td><td class="no">✗</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+        <tr><td>delete_folder</td><td class="no">✗</td><td class="no">✗</td><td class="yes">✓</td></tr>
+        <tr><td>restore_versions</td><td class="no">✗</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+        <tr><td>hard_delete</td><td class="no">✗</td><td class="no">✗</td><td class="yes">✓</td></tr>
+        <tr><td>export</td><td class="no">✗</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+        <tr><td>invite_users</td><td class="no">✗</td><td class="no">✗</td><td class="yes">✓</td></tr>
+        <tr><td>change_passwords</td><td class="no">✗</td><td class="no">✗</td><td class="yes">✓</td></tr>
+        <tr><td>view_activity</td><td class="no">✗</td><td class="no">✗</td><td class="yes">✓</td></tr>
+        <tr><td>manage_users</td><td class="no">✗</td><td class="no">✗</td><td class="yes">✓</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <div class="alert al-info">
+      <span class="al-icon">ℹ</span>
+      <span>Org admins can go to the Roles tab and create custom roles — for example "Finance Team" with upload, download, and export only. Custom roles can mix any of the 13 permissions above. Preset roles (read_only, read_write, admin) cannot be deleted.</span>
+    </div>
+  </div>
+</div>
+
+<div class="hr"></div>
+
+<div class="phase" id="s11">
+  <div class="phase-head">
+    <div class="ph-badge ph-active">11</div>
+    <div class="ph-info">
+      <div class="ph-title">Impersonation — entering an organisation's workspace</div>
+      <div class="ph-sub">As master admin, you can enter any organisation's workspace in two modes. Both modes give you full master admin powers inside the org. The org admin is always notified when you enter.</div>
+    </div>
+  </div>
+  <div class="two-col">
+    <div class="block">
+      <div class="blabel">Switch mode</div>
+      <pre><span class="c"># You see the org's full UI
+# You can act as their admin
+# Full master admin powers
+# Blue banner shows at all times:
+#  "Switch Mode — Acme Corp"
+# One-click Exit button visible</span></pre>
+      <div class="alert al-info">
+        <span class="al-icon">ℹ</span>
+        <span>Use Switch mode when you need to actively manage an org — create folders, move files, fix permissions.</span>
+      </div>
+    </div>
+    <div class="block">
+      <div class="blabel">Shadow mode</div>
+      <pre><span class="c"># You observe what the org sees
+# You can still take actions
+# Full master admin powers
+# Orange banner shows:
+#  "Shadow Mode — Acme Corp"
+# One-click Exit button visible</span></pre>
+      <div class="alert al-info">
+        <span class="al-icon">ℹ</span>
+        <span>Use Shadow mode when investigating a support issue — you can see exactly what the org sees without disrupting their work.</span>
+      </div>
+    </div>
+  </div>
+  <div class="block">
+    <div class="blabel">What gets logged when you impersonate</div>
+    <div class="checks">
+      <div class="crow"><span class="ck-icon">✓</span><div>Every action you take inside the org is logged as "master_admin acting as [org name]" — separately tagged from normal org activity</div></div>
+      <div class="crow"><span class="ck-icon">✓</span><div>Your entry and exit timestamps are recorded in both your master log and the org's own activity log</div></div>
+      <div class="crow"><span class="ck-icon">✓</span><div>The org admin receives an in-app notification the moment you enter: "Master admin (your name) has entered your workspace in Switch/Shadow mode"</div></div>
+      <div class="crow"><span class="ck-icon">✓</span><div>The org admin sees a read-only audit entry in their activity log (not real-time — appears after you exit)</div></div>
+    </div>
+  </div>
+</div>
+
+<div class="hr"></div>
+
+<div class="phase" id="s12">
+  <div class="phase-head">
+    <div class="ph-badge ph-active">12</div>
+    <div class="ph-info">
+      <div class="ph-title">Storage warning system</div>
+      <div class="ph-sub">VaultX automatically monitors storage usage for each organisation and sends notifications at three thresholds. At 100% uploads are blocked until you approve a storage upgrade.</div>
+    </div>
+  </div>
+  <div class="block">
+    <div class="blabel">Three automatic thresholds</div>
+    <div class="steps">
+      <div class="row"><div class="sn" style="background:var(--color-background-warning,#fff8e1);color:var(--color-text-warning,#a66200)">70</div><div class="srow-text"><strong>Warning (70%)</strong> — A yellow warning notification is sent to the org admin inside VaultX. Uploads still work normally. The org admin sees a banner on their dashboard showing current usage.</div></div>
+      <div class="row"><div class="sn" style="background:var(--color-background-danger,#fde8e8);color:var(--color-text-danger,#c00)">90</div><div class="srow-text"><strong>Critical (90%)</strong> — A red critical alert is sent to the org admin. Uploads still work but with a prominent warning. The org admin is advised to request a storage upgrade immediately.</div></div>
+      <div class="row"><div class="sn" style="background:var(--color-background-danger,#fde8e8);color:var(--color-text-danger,#c00)">100</div><div class="srow-text"><strong>Blocked (100%)</strong> — All uploads are immediately blocked. An automatic storage upgrade request is sent to you (master admin) on behalf of the org. You see a notification in your bell. The org admin also gets notified and can see the request status in their dashboard.</div></div>
+    </div>
+    <div class="alert al-info">
+      <span class="al-icon">ℹ</span>
+      <span>To approve a storage request: go to Storage Requests tab → click Approve → enter the new limit in GB (e.g. 1000 for 1 TB) → confirm. The org's storage warning resets and uploads resume immediately.</span>
+    </div>
+  </div>
+</div>
+
+<div class="hr"></div>
+
+<div class="phase" id="s13">
+  <div class="phase-head">
+    <div class="ph-badge ph-neutral">~</div>
+    <div class="ph-info">
+      <div class="ph-title">Recommended VS Code extensions</div>
+      <div class="ph-sub">Install these from the Extensions panel (Ctrl+Shift+X). Search by name and click Install.</div>
+    </div>
+  </div>
+  <div class="block">
+    <table class="tbl">
+      <thead><tr><th>Extension name</th><th>Publisher</th><th>What it does for VaultX</th></tr></thead>
+      <tbody>
+        <tr><td>Python</td><td>Microsoft</td><td>Run and debug app.py, IntelliSense, linting</td></tr>
+        <tr><td>Pylance</td><td>Microsoft</td><td>Smart autocomplete and type checking for Python</td></tr>
+        <tr><td>REST Client</td><td>Huachao Mao</td><td>Test API endpoints without curl or Postman — create .http files and click Send Request</td></tr>
+        <tr><td>SQLite Viewer</td><td>Florian Klampfer</td><td>Open vaultx.db in VS Code and browse all tables visually to debug data issues</td></tr>
+        <tr><td>DotENV</td><td>mikestead</td><td>Syntax highlighting for .env files so values are easy to read</td></tr>
+        <tr><td>Prettier</td><td>Prettier</td><td>Auto-format index.html and register.html on save</td></tr>
+        <tr><td>GitLens</td><td>GitKraken</td><td>See file history and blame information (useful when debugging changes)</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="hr"></div>
+
+<div class="phase" id="s14">
+  <div class="phase-head">
+    <div class="ph-badge ph-warn">!</div>
+    <div class="ph-info">
+      <div class="ph-title">Common errors and exactly how to fix them</div>
+      <div class="ph-sub">Every error below has been seen during setup. Follow the fix steps in order.</div>
+    </div>
+  </div>
+
+  <div class="block">
+    <div class="blabel">ModuleNotFoundError: No module named 'flask'</div>
+    <pre><span class="c"># Cause: the virtual environment is not active
+# Fix: run the activate command in your terminal</span>
+venv\Scripts\activate      <span class="c"># Windows</span>
+source venv/bin/activate   <span class="c"># Mac or Linux</span>
+<span class="c"># Then try again:</span>
+python app.py</pre>
+  </div>
+
+  <div class="block">
+    <div class="blabel">Telegram error: "chat not found" or "bot is not a member of the chat"</div>
+    <pre><span class="c"># Cause: the bot has not been added as admin to that org's channel
+# Fix:
+# 1. Open the Telegram channel
+# 2. Tap the channel name at the top → Administrators
+# 3. Add Administrator → search for your bot username → select it
+# 4. Enable all permissions → Save
+# 5. Try creating the org again in VaultX</span></pre>
+  </div>
+
+  <div class="block">
+    <div class="blabel">Environment variable VAULTX_BOT_TOKEN is empty or None</div>
+    <pre><span class="c"># Cause 1: .env file is missing or has wrong name (.env.txt instead of .env)
+# Fix: rename the file in VS Code file explorer to exactly ".env"</span>
+
+<span class="c"># Cause 2: load_dotenv() is missing from app.py
+# Fix: add these 2 lines at the top of app.py:</span>
+<span class="k">from</span> dotenv <span class="k">import</span> load_dotenv
+load_dotenv()
+
+<span class="c"># Cause 3: no value set in .env
+# Fix: open .env and make sure it looks exactly like this:</span>
+VAULTX_BOT_TOKEN=<span class="v">123456789:ABCDefGhIJKlmNoPQRsTUVwxyz</span></pre>
+  </div>
+
+  <div class="block">
+    <div class="blabel">OSError: [Errno 98] Address already in use (port 5000)</div>
+    <pre><span class="c"># Cause: another process is using port 5000
+# Fix option 1: find and stop the other process</span>
+lsof -i :5000       <span class="c"># Mac or Linux — find the process ID</span>
+kill -9 [PID]       <span class="c"># replace [PID] with the number shown</span>
+
+<span class="c"># Fix option 2: change VaultX to a different port
+# Open app.py, scroll to the very last line, change 5000 to 5001:</span>
+app.run(debug=<span class="v">True</span>, port=<span class="v">5001</span>)
+<span class="c"># Then open http://localhost:5001 in your browser instead</span></pre>
+  </div>
+
+  <div class="block">
+    <div class="blabel">Bootstrap returns: "already initialized"</div>
+    <pre><span class="c"># Cause: a master admin account already exists in vaultx.db
+# Fix: just log in at localhost:5000 with the credentials you already set
+#
+# If you genuinely forgot the password and need to reset:
+# 1. Stop the server (Ctrl+C in the terminal)
+# 2. Delete the database:</span>
+del vaultx.db      <span class="c"># Windows</span>
+rm vaultx.db       <span class="c"># Mac or Linux</span>
+<span class="c"># 3. Start the server again: python app.py
+# 4. Run the bootstrap command again</span></pre>
+    <div class="alert al-danger">
+      <span class="al-icon">✕</span>
+      <span>Deleting vaultx.db erases all users, all organisations, all folder structure, and all version history. The encrypted files in Telegram survive but cannot be linked to anything. Only do this if you are starting fresh from scratch.</span>
+    </div>
+  </div>
+
+  <div class="block">
+    <div class="blabel">Files upload successfully but download fails or gives wrong content</div>
+    <pre><span class="c"># Cause: wrong team passphrase entered during download
+# The passphrase used to download must exactly match the one used to upload
+# Fix: make sure every user in the org is using the same passphrase
+# The passphrase is case-sensitive and space-sensitive</span></pre>
+  </div>
+
+  <div class="block">
+    <div class="blabel">getUpdates URL returns empty result []</div>
+    <pre><span class="c"># Cause: no message has been sent in the Telegram channel yet
+# Fix: open the channel in Telegram, type any message (e.g. "test"),
+# then refresh the getUpdates URL in your browser</span></pre>
+  </div>
+
+</div>
+
+</div>
