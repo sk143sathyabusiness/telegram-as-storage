@@ -2,4 +2,5 @@ flask
 requests
 cryptography
 python-dotenv
-supabase==1.12.0
+telethon==1.26.0
+cryptg==0.1.0
