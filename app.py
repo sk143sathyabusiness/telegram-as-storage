@@ -81,6 +81,23 @@ def log_action(action, target=None, detail=None):
         "details": json.dumps(details) if details else None,
     }).execute()
 
+# ── PERMISSION HELPER ─────────────────────────────────────────────────────
+
+def _check_permission(sup, user_id, org_id, folder_id=None):
+    """Check user's effective permission for a folder. Returns level or None."""
+    user_result = sup.table("users").select("role").eq("id", user_id).single().execute()
+    role = user_result.data["role"]
+    if role == "master_admin":
+        return "org_admin"  # full access
+    if role == "org_admin":
+        return "org_admin"
+    if not folder_id:
+        return role  # org-wide default
+    perm = sup.table("permissions").select("permission_level").eq("user_id", user_id).eq("folder_id", folder_id).maybe_single().execute()
+    if perm.data:
+        return perm.data["permission_level"]
+    return role  # fall back to user's org role
+
 # ── STATIC / PAGES ────────────────────────────────────────────────────────
 
 @app.route("/")
@@ -180,21 +197,18 @@ def api_org_register():
 @login_required
 def api_orgs_get():
     user = current_user()
-    if user["role"] != "admin":
+    if user["role"] not in ("master_admin", "org_admin"):
         return jsonify([])
-    db = get_db()
-    rows = db.execute("SELECT * FROM orgs ORDER BY created_at DESC").fetchall()
-    return jsonify([dict(r) for r in rows])
+    sup = get_supabase()
+    data = sup.table("organizations").select("*").order("created_at", desc=True).execute().data
+    return jsonify([dict(r) for r in data])
 
 @app.route("/api/orgs/<int:org_id>/approve", methods=["POST"])
 @login_required
 def api_orgs_approve(org_id):
     user = current_user()
-    if user["role"] != "admin":
+    if user["role"] not in ("master_admin", "org_admin"):
         return jsonify({"error": "Admin only"}), 403
-    db = get_db()
-    db.execute("UPDATE orgs SET status='approved' WHERE id=?", (org_id,))
-    db.commit()
     log_action("approve_org", f"org_id={org_id}")
     return jsonify({"ok": True})
 
@@ -202,11 +216,8 @@ def api_orgs_approve(org_id):
 @login_required
 def api_orgs_reject(org_id):
     user = current_user()
-    if user["role"] != "admin":
+    if user["role"] not in ("master_admin", "org_admin"):
         return jsonify({"error": "Admin only"}), 403
-    db = get_db()
-    db.execute("UPDATE orgs SET status='rejected' WHERE id=?", (org_id,))
-    db.commit()
     log_action("reject_org", f"org_id={org_id}")
     return jsonify({"ok": True})
 
@@ -215,9 +226,10 @@ def api_orgs_reject(org_id):
 @app.route("/api/folders", methods=["GET"])
 @login_required
 def api_folders_get():
-    db = get_db()
-    rows = db.execute("SELECT id, name, parent_id FROM folders ORDER BY name").fetchall()
-    return jsonify([dict(r) for r in rows])
+    user = current_user()
+    sup = get_supabase()
+    data = sup.table("folders").select("id, name, parent_id").eq("org_id", user["org_id"]).order("name").execute().data
+    return jsonify([dict(r) for r in data])
 
 @app.route("/api/folders", methods=["POST"])
 @login_required
@@ -230,10 +242,8 @@ def api_folders_post():
     if not name:
         return jsonify({"error": "Folder name required"}), 400
     parent_id = data.get("parent_id")
-    db = get_db()
-    db.execute("INSERT INTO folders (name, parent_id, created_by) VALUES (?,?,?)",
-               (name, parent_id, user["id"]))
-    db.commit()
+    sup = get_supabase()
+    sup.table("folders").insert({"org_id": user["org_id"], "name": name, "parent_id": parent_id, "created_by": user["id"]}).execute()
     log_action("create_folder", name)
     return jsonify({"ok": True})
 
@@ -242,31 +252,28 @@ def api_folders_post():
 @app.route("/api/files", methods=["GET"])
 @login_required
 def api_files_get():
+    user = current_user()
     folder_id = request.args.get("folder_id")
-    db = get_db()
+    sup = get_supabase()
+    query = sup.table("files").select("id, name, folder_id, created_at").eq("org_id", user["org_id"]).eq("is_deleted", False)
     if folder_id:
-        rows = db.execute(
-            "SELECT * FROM files WHERE folder_id=? AND is_deleted=0 ORDER BY filename",
-            (int(folder_id),),
-        ).fetchall()
+        query = query.eq("folder_id", int(folder_id))
     else:
-        rows = db.execute(
-            "SELECT * FROM files WHERE (folder_id IS NULL OR folder_id=0) AND is_deleted=0 ORDER BY filename"
-        ).fetchall()
+        query = query.is_("folder_id", "null")
+    rows = query.order("name").execute().data
     result = []
     for r in rows:
         d = dict(r)
-        ver = db.execute(
-            "SELECT * FROM file_versions WHERE file_id=? AND is_current=1", (r["id"],)
-        ).fetchone()
-        if ver:
-            uploader = db.execute("SELECT username FROM users WHERE id=?", (ver["uploaded_by"],)).fetchone()
+        ver_result = sup.table("file_versions").select("version_number, size_bytes, sha256, uploaded_at, uploaded_by").eq("file_id", r["id"]).eq("is_current", True).maybe_single().execute()
+        if ver_result.data:
+            ver = ver_result.data
+            uploader_res = sup.table("users").select("username").eq("id", ver["uploaded_by"]).maybe_single().execute()
             d["current_version"] = {
-                "version_no": ver["version_no"],
+                "version_number": ver["version_number"],
                 "size_bytes": ver["size_bytes"],
                 "sha256": ver["sha256"],
                 "uploaded_at": ver["uploaded_at"],
-                "uploaded_by_name": uploader["username"] if uploader else None,
+                "uploaded_by_name": uploader_res.data["username"] if uploader_res.data else None,
             }
         result.append(d)
     return jsonify(result)
@@ -310,7 +317,9 @@ def api_files_upload():
     if not f:
         return jsonify({"error": "No file provided"}), 400
     sup = get_supabase()
-    # TODO: add permission check in Task 5
+    perm = _check_permission(sup, user["user_id"], user["org_id"], folder_id)
+    if not perm or perm == "read_only":
+        return jsonify({"error": "Permission denied"}), 403
     try:
         message_ids, size_bytes = _store_file_blob(f, user["org_id"])
     except Exception as e:
@@ -359,15 +368,18 @@ def api_files_upload():
 @login_required
 def api_files_download(file_id):
     sup = get_supabase()
-    file_result = sup.table("files").select("id, name, org_id").eq("id", file_id).execute()
+    user = current_user()
+    file_result = sup.table("files").select("id, name, org_id, folder_id").eq("id", file_id).execute()
     if not file_result.data:
         return jsonify({"error": "File not found"}), 404
     fdata = file_result.data[0]
+    perm = _check_permission(sup, user["id"], user["org_id"], fdata.get("folder_id"))
+    if not perm or perm == "read_only":
+        return jsonify({"error": "Permission denied"}), 403
     ver_result = sup.table("file_versions").select("*").eq("file_id", file_id).eq("is_current", True).execute()
     if not ver_result.data:
         return jsonify({"error": "No current version"}), 404
     ver = ver_result.data[0]
-    # TODO: add permission check in Task 5
     message_ids = json.loads(ver["message_ids"])
     try:
         file_bytes = _load_file_blob(fdata["org_id"], message_ids)
@@ -380,14 +392,12 @@ def api_files_download(file_id):
 @login_required
 def api_files_delete(file_id):
     user = current_user()
-    if user["role"] != "admin":
+    if user["role"] not in ("org_admin", "master_admin"):
         return jsonify({"error": "Admin only"}), 403
-    db = get_db()
-    db.execute("UPDATE files SET is_deleted=1, deleted_at=?, deleted_by=? WHERE id=?",
-               (time.time(), user["id"], file_id))
-    db.commit()
-    f = db.execute("SELECT filename FROM files WHERE id=?", (file_id,)).fetchone()
-    log_action("trash", f["filename"] if f else None)
+    sup = get_supabase()
+    sup.table("files").update({"is_deleted": True, "deleted_at": "now", "deleted_by": user["id"]}).eq("id", file_id).eq("org_id", user["org_id"]).execute()
+    f = sup.table("files").select("name").eq("id", file_id).maybe_single().execute()
+    log_action("trash", f.data["name"] if f.data else None)
     return jsonify({"ok": True})
 
 # ── VERSIONS API ───────────────────────────────────────────────────────────
@@ -395,15 +405,13 @@ def api_files_delete(file_id):
 @app.route("/api/files/<int:file_id>/versions", methods=["GET"])
 @login_required
 def api_versions(file_id):
-    db = get_db()
-    rows = db.execute(
-        "SELECT * FROM file_versions WHERE file_id=? ORDER BY version_no DESC", (file_id,)
-    ).fetchall()
+    sup = get_supabase()
+    rows = sup.table("file_versions").select("*").eq("file_id", file_id).order("version_number", desc=True).execute().data
     result = []
     for r in rows:
         d = dict(r)
-        uploader = db.execute("SELECT username FROM users WHERE id=?", (r["uploaded_by"],)).fetchone()
-        d["uploaded_by_name"] = uploader["username"] if uploader else None
+        uploader = sup.table("users").select("username").eq("id", r["uploaded_by"]).maybe_single().execute()
+        d["uploaded_by_name"] = uploader.data["username"] if uploader.data else None
         d["is_current"] = bool(r["is_current"])
         result.append(d)
     return jsonify(result)
@@ -414,17 +422,14 @@ def api_restore_version(file_id, version_no):
     user = current_user()
     if user["role"] == "read_only":
         return jsonify({"error": "Permission denied"}), 403
-    db = get_db()
-    ver = db.execute(
-        "SELECT * FROM file_versions WHERE file_id=? AND version_no=?", (file_id, version_no)
-    ).fetchone()
-    if not ver:
+    sup = get_supabase()
+    ver = sup.table("file_versions").select("id").eq("file_id", file_id).eq("version_number", version_no).maybe_single().execute()
+    if not ver.data:
         return jsonify({"error": "Version not found"}), 404
-    db.execute("UPDATE file_versions SET is_current=0 WHERE file_id=?", (file_id,))
-    db.execute("UPDATE file_versions SET is_current=1 WHERE id=?", (ver["id"],))
-    db.commit()
-    f = db.execute("SELECT filename FROM files WHERE id=?", (file_id,)).fetchone()
-    log_action("restore_version", f["filename"] if f else None, f"v{version_no}")
+    sup.table("file_versions").update({"is_current": False}).eq("file_id", file_id).execute()
+    sup.table("file_versions").update({"is_current": True}).eq("id", ver.data["id"]).execute()
+    f = sup.table("files").select("name").eq("id", file_id).maybe_single().execute()
+    log_action("restore_version", f.data["name"] if f.data else None, f"v{version_no}")
     return jsonify({"ok": True})
 
 # ── TRASH API ──────────────────────────────────────────────────────────────
@@ -433,17 +438,18 @@ def api_restore_version(file_id, version_no):
 @login_required
 def api_trash_get():
     user = current_user()
-    if user["role"] != "admin":
+    if user["role"] not in ("org_admin", "master_admin"):
         return jsonify([])
-    db = get_db()
-    rows = db.execute(
-        "SELECT * FROM files WHERE is_deleted=1 ORDER BY deleted_at DESC"
-    ).fetchall()
+    sup = get_supabase()
+    rows = sup.table("files").select("*").eq("org_id", user["org_id"]).eq("is_deleted", True).order("deleted_at", desc=True).execute().data
     result = []
     for r in rows:
         d = dict(r)
-        del_user = db.execute("SELECT username FROM users WHERE id=?", (r["deleted_by"],)).fetchone()
-        d["deleted_by_name"] = del_user["username"] if del_user else None
+        if r.get("deleted_by"):
+            del_user = sup.table("users").select("username").eq("id", r["deleted_by"]).maybe_single().execute()
+            d["deleted_by_name"] = del_user.data["username"] if del_user.data else None
+        else:
+            d["deleted_by_name"] = None
         result.append(d)
     return jsonify(result)
 
@@ -451,33 +457,25 @@ def api_trash_get():
 @login_required
 def api_trash_restore(file_id):
     user = current_user()
-    if user["role"] != "admin":
+    if user["role"] not in ("org_admin", "master_admin"):
         return jsonify({"error": "Admin only"}), 403
-    db = get_db()
-    db.execute("UPDATE files SET is_deleted=0, deleted_at=NULL, deleted_by=NULL WHERE id=?", (file_id,))
-    db.commit()
-    f = db.execute("SELECT filename FROM files WHERE id=?", (file_id,)).fetchone()
-    log_action("restore_from_trash", f["filename"] if f else None)
+    sup = get_supabase()
+    sup.table("files").update({"is_deleted": False, "deleted_at": None, "deleted_by": None}).eq("id", file_id).execute()
+    f = sup.table("files").select("name").eq("id", file_id).maybe_single().execute()
+    log_action("restore_from_trash", f.data["name"] if f.data else None)
     return jsonify({"ok": True})
 
 @app.route("/api/trash/<int:file_id>", methods=["DELETE"])
 @login_required
 def api_trash_hard_delete(file_id):
     user = current_user()
-    if user["role"] != "admin":
+    if user["role"] not in ("org_admin", "master_admin"):
         return jsonify({"error": "Admin only"}), 403
-    db = get_db()
-    # Delete file versions from disk
-    versions = db.execute("SELECT storage_key FROM file_versions WHERE file_id=?", (file_id,)).fetchall()
-    for v in versions:
-        path = os.path.join(app.root_path, "uploads", v["storage_key"])
-        if os.path.exists(path):
-            os.remove(path)
-    f = db.execute("SELECT filename FROM files WHERE id=?", (file_id,)).fetchone()
-    db.execute("DELETE FROM file_versions WHERE file_id=?", (file_id,))
-    db.execute("DELETE FROM files WHERE id=?", (file_id,))
-    db.commit()
-    log_action("permanent_delete", f["filename"] if f else None)
+    sup = get_supabase()
+    f = sup.table("files").select("name").eq("id", file_id).maybe_single().execute()
+    sup.table("file_versions").delete().eq("file_id", file_id).execute()
+    sup.table("files").delete().eq("id", file_id).execute()
+    log_action("permanent_delete", f.data["name"] if f.data else None)
     return jsonify({"ok": True})
 
 # ── USERS API ──────────────────────────────────────────────────────────────
@@ -485,15 +483,16 @@ def api_trash_hard_delete(file_id):
 @app.route("/api/users", methods=["GET"])
 @login_required
 def api_users_get():
-    db = get_db()
-    rows = db.execute("SELECT id, username, role, created_at FROM users ORDER BY username").fetchall()
-    return jsonify([dict(r) for r in rows])
+    user = current_user()
+    sup = get_supabase()
+    data = sup.table("users").select("id, username, role, created_at").eq("org_id", user["org_id"]).order("username").execute().data
+    return jsonify([dict(r) for r in data])
 
 @app.route("/api/users", methods=["POST"])
 @login_required
 def api_users_post():
     user = current_user()
-    if user["role"] != "admin":
+    if user["role"] not in ("org_admin", "master_admin"):
         return jsonify({"error": "Admin only"}), 403
     data = request.get_json(force=True)
     username = data.get("username", "").strip()
@@ -501,15 +500,18 @@ def api_users_post():
     role = data.get("role", "read_write")
     if not username or not password:
         return jsonify({"error": "Username and password required"}), 400
-    if role not in ("admin", "read_write", "read_only"):
+    if role not in ("org_admin", "read_write", "read_only"):
         return jsonify({"error": "Invalid role"}), 400
-    db = get_db()
-    existing = db.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
-    if existing:
+    sup = get_supabase()
+    existing = sup.table("users").select("id").eq("username", username).maybe_single().execute()
+    if existing.data:
         return jsonify({"error": "Username already exists"}), 400
-    db.execute("INSERT INTO users (username, password_hash, role) VALUES (?,?,?)",
-               (username, generate_password_hash(password), role))
-    db.commit()
+    sup.table("users").insert({
+        "org_id": user["org_id"],
+        "username": username,
+        "password_hash": generate_password_hash(password),
+        "role": role,
+    }).execute()
     log_action("create_user", username, f"role={role}")
     return jsonify({"ok": True})
 
@@ -517,17 +519,16 @@ def api_users_post():
 @login_required
 def api_users_delete(user_id):
     user = current_user()
-    if user["role"] != "admin":
+    if user["role"] not in ("org_admin", "master_admin"):
         return jsonify({"error": "Admin only"}), 403
     if user["id"] == user_id:
         return jsonify({"error": "Cannot remove yourself"}), 400
-    db = get_db()
-    target = db.execute("SELECT username FROM users WHERE id=?", (user_id,)).fetchone()
-    if not target:
+    sup = get_supabase()
+    target = sup.table("users").select("username").eq("id", user_id).maybe_single().execute()
+    if not target.data:
         return jsonify({"error": "User not found"}), 404
-    db.execute("DELETE FROM users WHERE id=?", (user_id,))
-    db.commit()
-    log_action("delete_user", target["username"])
+    sup.table("users").delete().eq("id", user_id).eq("org_id", user["org_id"]).execute()
+    log_action("delete_user", target.data["username"])
     return jsonify({"ok": True})
 
 # ── LOGS API ───────────────────────────────────────────────────────────────
@@ -536,31 +537,46 @@ def api_users_delete(user_id):
 @login_required
 def api_logs_get():
     user = current_user()
-    if user["role"] != "admin":
+    if user["role"] not in ("org_admin", "master_admin"):
         return jsonify([])
     limit = request.args.get("limit", 300, type=int)
-    db = get_db()
-    rows = db.execute("SELECT * FROM logs ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
-    return jsonify([dict(r) for r in rows])
+    sup = get_supabase()
+    data = sup.table("audit_logs").select("*").eq("org_id", user["org_id"]).order("created_at", desc=True).limit(limit).execute().data
+    result = []
+    for r in data:
+        d = dict(r)
+        d["ts"] = d.pop("created_at")
+        d["user_id"] = d.pop("actor_id")
+        d["role"] = d.pop("actor_role")
+        result.append(d)
+    return jsonify(result)
 
 # ── VERSIONS ALL API ────────────────────────────────────────────────────────
 
 @app.route("/api/versions/all", methods=["GET"])
 @login_required
 def api_versions_all():
-    db = get_db()
-    rows = db.execute("""
-        SELECT fv.id, fv.file_id, fv.version_no, fv.size_bytes, fv.sha256,
-               fv.uploaded_by, fv.uploaded_at, fv.is_current,
-               f.filename, u.username AS uploaded_by_name
-        FROM file_versions fv
-        JOIN files f ON f.id = fv.file_id
-        LEFT JOIN users u ON u.id = fv.uploaded_by
-        WHERE f.is_deleted = 0
-        ORDER BY fv.uploaded_at DESC
-        LIMIT 500
-    """).fetchall()
-    return jsonify([dict(r) for r in rows])
+    user = current_user()
+    sup = get_supabase()
+    files_data = sup.table("files").select("id, name").eq("org_id", user["org_id"]).eq("is_deleted", False).execute().data
+    file_ids = [f["id"] for f in files_data]
+    file_map = {f["id"]: f["name"] for f in files_data}
+    if not file_ids:
+        return jsonify([])
+    versions = sup.table("file_versions").select("*").in_("file_id", file_ids).order("uploaded_at", desc=True).limit(500).execute().data
+    uploader_ids = list(set(v["uploaded_by"] for v in versions if v.get("uploaded_by")))
+    users_data = {}
+    if uploader_ids:
+        users_result = sup.table("users").select("id, username").in_("id", uploader_ids).execute().data
+        users_data = {u["id"]: u["username"] for u in users_result}
+    result = []
+    for v in versions:
+        d = dict(v)
+        d["filename"] = file_map.get(v["file_id"])
+        d["uploaded_by_name"] = users_data.get(v["uploaded_by"])
+        d["is_current"] = bool(v["is_current"])
+        result.append(d)
+    return jsonify(result)
 
 # ── BACKUP API ──────────────────────────────────────────────────────────────
 
