@@ -1,11 +1,14 @@
 .env
+.secret_key
 venv/
 __pycache__/
 *.log
 *.pyc
 *.sqlite
 *.sqlite3
+*.session
 node_modules/
 .DS_Store
-.env
 .env.local
+uploads/
+vcpkg_installer.exe
