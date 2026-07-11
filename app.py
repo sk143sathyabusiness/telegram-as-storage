@@ -2,7 +2,7 @@
 TeamVault — small-team private file storage backed by Telegram.
 """
 
-import os, io, json, time, secrets, hashlib, uuid
+import os, io, json, time, secrets, hashlib, uuid, asyncio
 from functools import wraps
 from flask import Flask, request, jsonify, session, g, send_from_directory, send_file
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -271,112 +271,110 @@ def api_files_get():
         result.append(d)
     return jsonify(result)
 
-def _store_file_blob(f, user_id):
-    """Store uploaded file bytes. Returns (storage_key, size_bytes).
-       Uses Telegram if configured, otherwise falls back to local disk."""
+def _store_file_blob(f, org_id):
+    """Upload encrypted bytes to org's Telegram channel. Returns (message_ids, size_bytes)."""
     file_bytes = f.read()
-    size_bytes = len(file_bytes)
-
-    if telegram_bot.is_configured():
-        # Get the org's chat_id from the DB
-        db = get_db()
-        chat_id = None
-        org = db.execute("SELECT chat_id FROM orgs WHERE created_by=?", (user_id,)).fetchone()
-        if org and org["chat_id"]:
-            chat_id = org["chat_id"]
-        try:
-            file_id, msg_id = telegram_bot.send_document(chat_id, file_bytes, f.filename or "file")
-            storage_key = f"tg:{file_id}:{msg_id}"
-            return storage_key, size_bytes
-        except Exception as e:
-            log_action("telegram_upload_error", str(e))
-            # Fall through to local storage
-    # Fallback: save to local disk
-    ensure_dirs()
-    file_key = secrets.token_hex(16)
-    with open(os.path.join(app.root_path, "uploads", file_key), "wb") as out:
-        out.write(file_bytes)
-    return file_key, size_bytes
+    if not telegram_bot.is_configured():
+        raise RuntimeError("Telegram not configured")
+    sup = get_supabase()
+    org = sup.table("organizations").select("telegram_chat_id").eq("id", org_id).single().execute()
+    chat_id = int(org.data["telegram_chat_id"]) if org.data.get("telegram_chat_id") else None
+    if not chat_id:
+        raise RuntimeError("No Telegram chat_id configured for this organisation")
+    message_ids = asyncio.run(telegram_bot.upload_chunks(file_bytes, f.filename or "file", chat_id))
+    return message_ids, len(file_bytes)
 
 
-def _load_file_blob(storage_key):
-    """Load file bytes by storage_key. Handles both Telegram and local storage."""
-    if storage_key.startswith("tg:"):
-        parts = storage_key.split(":", 2)
-        if len(parts) >= 2:
-            file_id = parts[1]
-            return telegram_bot.get_file_bytes(file_id)
-        raise RuntimeError(f"Invalid Telegram storage_key: {storage_key}")
-    # Local file
-    path = os.path.join(app.root_path, "uploads", storage_key)
-    with open(path, "rb") as f:
-        return f.read()
+def _load_file_blob(org_id, message_ids):
+    """Download encrypted bytes from Telegram chunks."""
+    if not telegram_bot.is_configured():
+        raise RuntimeError("Telegram not configured")
+    sup = get_supabase()
+    org = sup.table("organizations").select("telegram_chat_id").eq("id", org_id).single().execute()
+    chat_id = int(org.data["telegram_chat_id"]) if org.data.get("telegram_chat_id") else None
+    if not chat_id:
+        raise RuntimeError("No Telegram chat_id configured")
+    return asyncio.run(telegram_bot.download_chunks(chat_id, message_ids))
 
 
 @app.route("/api/files/upload", methods=["POST"])
 @login_required
 def api_files_upload():
-    user = current_user()
+    user = session  # user_id, org_id, role set in session
     if user["role"] == "read_only":
         return jsonify({"error": "Permission denied"}), 403
     f = request.files.get("file")
     filename = request.form.get("filename", "unnamed")
     folder_id = request.form.get("folder_id") or None
     sha256 = request.form.get("sha256", "")
-    if folder_id:
-        folder_id = int(folder_id)
     if not f:
         return jsonify({"error": "No file provided"}), 400
+    sup = get_supabase()
+    # TODO: add permission check in Task 5
     try:
-        storage_key, size_bytes = _store_file_blob(f, user["id"])
+        message_ids, size_bytes = _store_file_blob(f, user["org_id"])
     except Exception as e:
         return jsonify({"error": f"Storage failed: {e}"}), 500
-    db = get_db()
-    # Find existing file with same name in same folder
-    existing = db.execute(
-        "SELECT id FROM files WHERE filename=? AND folder_id IS ? AND is_deleted=0",
-        (filename, folder_id),
-    ).fetchone()
-    if existing:
-        file_id = existing["id"]
-        # Bump version
-        last = db.execute(
-            "SELECT MAX(version_no) as m FROM file_versions WHERE file_id=?", (file_id,)
-        ).fetchone()
-        new_ver = (last["m"] or 0) + 1
-        # Mark old versions as not current
-        db.execute("UPDATE file_versions SET is_current=0 WHERE file_id=?", (file_id,))
+    # Find existing file by name + folder
+    existing_query = sup.table("files").select("id").eq("org_id", user["org_id"]).eq("name", filename).eq("is_deleted", False)
+    if folder_id:
+        existing_query = existing_query.eq("folder_id", folder_id)
     else:
-        cur = db.execute(
-            "INSERT INTO files (filename, folder_id, created_by) VALUES (?,?,?)",
-            (filename, folder_id, user["id"]),
-        )
-        file_id = cur.lastrowid
+        existing_query = existing_query.is_("folder_id", "null")
+    existing = existing_query.execute()
+    if existing.data:
+        file_id = existing.data[0]["id"]
+        last = sup.table("file_versions").select("version_number").eq("file_id", file_id).order("version_number", desc=True).limit(1).execute()
+        new_ver = (last.data[0]["version_number"] if last.data else 0) + 1
+        sup.table("file_versions").update({"is_current": False}).eq("file_id", file_id).execute()
+    else:
+        file_result = sup.table("files").insert({
+            "org_id": user["org_id"],
+            "folder_id": folder_id,
+            "name": filename,
+        }).execute()
+        file_id = file_result.data[0]["id"]
         new_ver = 1
-    db.execute(
-        "INSERT INTO file_versions (file_id, version_no, size_bytes, sha256, storage_key, uploaded_by, is_current) VALUES (?,?,?,?,?,?,1)",
-        (file_id, new_ver, size_bytes, sha256, storage_key, user["id"]),
-    )
-    db.commit()
-    log_action("upload", filename, f"v{new_ver}")
+    sup.table("file_versions").insert({
+        "file_id": file_id,
+        "version_number": new_ver,
+        "size_bytes": size_bytes,
+        "sha256": sha256,
+        "message_ids": json.dumps(message_ids),
+        "uploaded_by": user["user_id"],
+        "is_current": True,
+    }).execute()
+    sup.table("audit_logs").insert({
+        "org_id": user["org_id"],
+        "actor_id": user["user_id"],
+        "actor_role": user["role"],
+        "action": "upload",
+        "target_type": "file",
+        "target_id": str(file_id),
+        "details": json.dumps({"filename": filename, "version": new_ver}),
+    }).execute()
     return jsonify({"ok": True, "file_id": file_id, "version": new_ver})
 
 @app.route("/api/files/<int:file_id>/download", methods=["GET"])
 @login_required
 def api_files_download(file_id):
-    db = get_db()
-    ver = db.execute(
-        "SELECT * FROM file_versions WHERE file_id=? AND is_current=1", (file_id,)
-    ).fetchone()
-    if not ver:
+    sup = get_supabase()
+    file_result = sup.table("files").select("id, name, org_id").eq("id", file_id).execute()
+    if not file_result.data:
+        return jsonify({"error": "File not found"}), 404
+    fdata = file_result.data[0]
+    ver_result = sup.table("file_versions").select("*").eq("file_id", file_id).eq("is_current", True).execute()
+    if not ver_result.data:
         return jsonify({"error": "No current version"}), 404
+    ver = ver_result.data[0]
+    # TODO: add permission check in Task 5
+    message_ids = json.loads(ver["message_ids"])
     try:
-        file_bytes = _load_file_blob(ver["storage_key"])
+        file_bytes = _load_file_blob(fdata["org_id"], message_ids)
     except Exception as e:
         return jsonify({"error": f"File not found: {e}"}), 404
-    fname = db.execute("SELECT filename FROM files WHERE id=?", (file_id,)).fetchone()["filename"]
-    log_action("download", fname)
-    return send_file(io.BytesIO(file_bytes), download_name=fname, as_attachment=True)
+    log_action("download", fdata["name"])
+    return send_file(io.BytesIO(file_bytes), download_name=fdata["name"], as_attachment=True)
 
 @app.route("/api/files/<int:file_id>", methods=["DELETE"])
 @login_required
