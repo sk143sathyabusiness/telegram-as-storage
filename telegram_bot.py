@@ -1,62 +1,59 @@
 """
-Telegram Bot API wrapper for TeamVault.
-Stores encrypted files as documents in Telegram channels.
-Each organisation has its own channel (chat_id).
+Telethon userbot for TeamVault.
+Uploads/downloads encrypted file chunks to/from Telegram channels.
+Each chunk = one Telegram message. Message IDs stored in file_versions.message_ids.
 """
 
 import os
-import requests
+import io
+import asyncio
+from telethon import TelegramClient, utils
 
-BOT_TOKEN = os.getenv("VAULTX_BOT_TOKEN")
-TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
-DEFAULT_CHAT_ID = os.getenv("VAULTX_CHAT_ID")
+API_ID = int(os.getenv("TELETHON_API_ID", "0"))
+API_HASH = os.getenv("TELETHON_API_HASH", "")
+SESSION_FILE = os.path.join(os.path.dirname(__file__), "session_name.session")
+CHUNK_SIZE = 1_900_000_000  # ~1.9 GB per chunk
+
+_client = None
 
 
-def _call(method, **kwargs):
-    url = f"{TELEGRAM_API}/{method}"
-    try:
-        r = requests.post(url, **kwargs, timeout=120)
-        data = r.json()
-        if not data.get("ok"):
-            raise RuntimeError(f"Telegram API error: {data}")
-        return data["result"]
-    except requests.RequestException as e:
-        raise RuntimeError(f"Telegram request failed: {e}")
+async def _get_client():
+    global _client
+    if _client is None:
+        _client = TelegramClient(SESSION_FILE, API_ID, API_HASH)
+        await _client.start()
+    return _client
 
 
 def is_configured():
-    return bool(BOT_TOKEN)
+    return bool(API_ID and API_HASH)
 
 
-def get_chat_id(chat_id=None):
-    return chat_id or DEFAULT_CHAT_ID
+async def upload_chunks(file_bytes: bytes, filename: str, chat_id: int) -> list[int]:
+    """Upload encrypted bytes as one or more messages. Returns list of message IDs."""
+    client = await _get_client()
+    entity = await client.get_entity(utils.resolve_id(chat_id))
+    message_ids = []
+    offset = 0
+    while offset < len(file_bytes):
+        chunk = file_bytes[offset:offset + CHUNK_SIZE]
+        buf = io.BytesIO(chunk)
+        buf.name = filename if offset == 0 else f"{filename}.part{offset // CHUNK_SIZE}"
+        msg = await client.send_file(entity, buf, force_document=True)
+        message_ids.append(msg.id)
+        offset += CHUNK_SIZE
+    return message_ids
 
 
-def send_document(chat_id, file_bytes, filename):
-    """Upload encrypted bytes to a Telegram channel. Returns (file_id, message_id)."""
-    result = _call(
-        "sendDocument",
-        data={"chat_id": get_chat_id(chat_id)},
-        files={"document": (filename, file_bytes)},
-    )
-    doc = result["document"]
-    # Pick the largest available file_id (Telegram may provide thumbnails)
-    file_id = doc.get("file_id")
-    message_id = result["message_id"]
-    return file_id, message_id
-
-
-def get_file_bytes(file_id):
-    """Download file bytes from Telegram by file_id."""
-    result = _call("getFile", data={"file_id": file_id})
-    file_path = result["file_path"]
-    url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
-    r = requests.get(url, timeout=120)
-    r.raise_for_status()
-    return r.content
-
-
-def get_chat_member_count(chat_id):
-    """Verify the bot can access a channel."""
-    result = _call("getChatMemberCount", data={"chat_id": get_chat_id(chat_id)})
-    return result
+async def download_chunks(chat_id: int, message_ids: list[int]) -> bytes:
+    """Download and concatenate chunks from Telegram messages."""
+    client = await _get_client()
+    entity = await client.get_entity(utils.resolve_id(chat_id))
+    chunks = []
+    for mid in message_ids:
+        msg = await client.get_messages(entity, ids=mid)
+        if msg and msg.document:
+            buf = io.BytesIO()
+            await client.download_file(msg.document, buf)
+            chunks.append(buf.getvalue())
+    return b"".join(chunks)
