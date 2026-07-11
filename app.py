@@ -2,9 +2,11 @@
 TeamVault — small-team private file storage backed by Telegram.
 """
 
-import os, io, json, time, secrets, hashlib, uuid, asyncio
+import os, io, json, time, secrets, hashlib, uuid as uuid_lib, asyncio
+from datetime import datetime
 from functools import wraps
 from flask import Flask, request, jsonify, session, g, send_from_directory, send_file
+from werkzeug.routing import BaseConverter
 from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
 from supabase import create_client, Client
@@ -14,6 +16,15 @@ load_dotenv()
 import telegram_bot
 
 app = Flask(__name__)
+
+class UUIDConverter(BaseConverter):
+    def to_python(self, value):
+        return uuid_lib.UUID(value)
+    def to_url(self, value):
+        return str(value)
+
+app.url_map.converters['uuid'] = UUIDConverter
+
 SECRET_KEY_FILE = os.path.join(os.path.dirname(__file__), ".secret_key")
 if os.getenv("SECRET_KEY"):
     app.secret_key = os.getenv("SECRET_KEY")
@@ -93,7 +104,7 @@ def _check_permission(sup, user_id, org_id, folder_id=None):
         return "org_admin"
     if not folder_id:
         return role  # org-wide default
-    perm = sup.table("permissions").select("permission_level").eq("user_id", user_id).eq("folder_id", folder_id).maybe_single().execute()
+    perm = sup.table("permissions").select("permission_level").eq("org_id", org_id).eq("user_id", user_id).eq("folder_id", folder_id).maybe_single().execute()
     if perm.data:
         return perm.data["permission_level"]
     return role  # fall back to user's org role
@@ -203,21 +214,25 @@ def api_orgs_get():
     data = sup.table("organizations").select("*").order("created_at", desc=True).execute().data
     return jsonify([dict(r) for r in data])
 
-@app.route("/api/orgs/<int:org_id>/approve", methods=["POST"])
+@app.route("/api/orgs/<uuid:org_id>/approve", methods=["POST"])
 @login_required
 def api_orgs_approve(org_id):
     user = current_user()
     if user["role"] not in ("master_admin", "org_admin"):
         return jsonify({"error": "Admin only"}), 403
+    sup = get_supabase()
+    sup.table("organizations").update({"status": "approved"}).eq("id", org_id).execute()
     log_action("approve_org", f"org_id={org_id}")
     return jsonify({"ok": True})
 
-@app.route("/api/orgs/<int:org_id>/reject", methods=["POST"])
+@app.route("/api/orgs/<uuid:org_id>/reject", methods=["POST"])
 @login_required
 def api_orgs_reject(org_id):
     user = current_user()
     if user["role"] not in ("master_admin", "org_admin"):
         return jsonify({"error": "Admin only"}), 403
+    sup = get_supabase()
+    sup.table("organizations").update({"status": "rejected"}).eq("id", org_id).execute()
     log_action("reject_org", f"org_id={org_id}")
     return jsonify({"ok": True})
 
@@ -243,7 +258,7 @@ def api_folders_post():
         return jsonify({"error": "Folder name required"}), 400
     parent_id = data.get("parent_id")
     sup = get_supabase()
-    sup.table("folders").insert({"org_id": user["org_id"], "name": name, "parent_id": parent_id, "created_by": user["id"]}).execute()
+    sup.table("folders").insert({"org_id": user["org_id"], "name": name, "parent_id": parent_id}).execute()
     log_action("create_folder", name)
     return jsonify({"ok": True})
 
@@ -364,7 +379,7 @@ def api_files_upload():
     }).execute()
     return jsonify({"ok": True, "file_id": file_id, "version": new_ver})
 
-@app.route("/api/files/<int:file_id>/download", methods=["GET"])
+@app.route("/api/files/<uuid:file_id>/download", methods=["GET"])
 @login_required
 def api_files_download(file_id):
     sup = get_supabase()
@@ -388,21 +403,21 @@ def api_files_download(file_id):
     log_action("download", fdata["name"])
     return send_file(io.BytesIO(file_bytes), download_name=fdata["name"], as_attachment=True)
 
-@app.route("/api/files/<int:file_id>", methods=["DELETE"])
+@app.route("/api/files/<uuid:file_id>", methods=["DELETE"])
 @login_required
 def api_files_delete(file_id):
     user = current_user()
     if user["role"] not in ("org_admin", "master_admin"):
         return jsonify({"error": "Admin only"}), 403
     sup = get_supabase()
-    sup.table("files").update({"is_deleted": True, "deleted_at": "now", "deleted_by": user["id"]}).eq("id", file_id).eq("org_id", user["org_id"]).execute()
+    sup.table("files").update({"is_deleted": True, "deleted_at": datetime.utcnow().isoformat(), "deleted_by": user["id"]}).eq("id", file_id).eq("org_id", user["org_id"]).execute()
     f = sup.table("files").select("name").eq("id", file_id).maybe_single().execute()
     log_action("trash", f.data["name"] if f.data else None)
     return jsonify({"ok": True})
 
 # ── VERSIONS API ───────────────────────────────────────────────────────────
 
-@app.route("/api/files/<int:file_id>/versions", methods=["GET"])
+@app.route("/api/files/<uuid:file_id>/versions", methods=["GET"])
 @login_required
 def api_versions(file_id):
     sup = get_supabase()
@@ -416,7 +431,7 @@ def api_versions(file_id):
         result.append(d)
     return jsonify(result)
 
-@app.route("/api/files/<int:file_id>/restore/<int:version_no>", methods=["POST"])
+@app.route("/api/files/<uuid:file_id>/restore/<int:version_no>", methods=["POST"])
 @login_required
 def api_restore_version(file_id, version_no):
     user = current_user()
@@ -453,19 +468,19 @@ def api_trash_get():
         result.append(d)
     return jsonify(result)
 
-@app.route("/api/trash/<int:file_id>/restore", methods=["POST"])
+@app.route("/api/trash/<uuid:file_id>/restore", methods=["POST"])
 @login_required
 def api_trash_restore(file_id):
     user = current_user()
     if user["role"] not in ("org_admin", "master_admin"):
         return jsonify({"error": "Admin only"}), 403
     sup = get_supabase()
-    sup.table("files").update({"is_deleted": False, "deleted_at": None, "deleted_by": None}).eq("id", file_id).execute()
+    sup.table("files").update({"is_deleted": False, "deleted_at": None, "deleted_by": None}).eq("id", file_id).eq("org_id", user["org_id"]).execute()
     f = sup.table("files").select("name").eq("id", file_id).maybe_single().execute()
     log_action("restore_from_trash", f.data["name"] if f.data else None)
     return jsonify({"ok": True})
 
-@app.route("/api/trash/<int:file_id>", methods=["DELETE"])
+@app.route("/api/trash/<uuid:file_id>", methods=["DELETE"])
 @login_required
 def api_trash_hard_delete(file_id):
     user = current_user()
@@ -474,7 +489,7 @@ def api_trash_hard_delete(file_id):
     sup = get_supabase()
     f = sup.table("files").select("name").eq("id", file_id).maybe_single().execute()
     sup.table("file_versions").delete().eq("file_id", file_id).execute()
-    sup.table("files").delete().eq("id", file_id).execute()
+    sup.table("files").delete().eq("id", file_id).eq("org_id", user["org_id"]).execute()
     log_action("permanent_delete", f.data["name"] if f.data else None)
     return jsonify({"ok": True})
 
