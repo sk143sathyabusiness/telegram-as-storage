@@ -2,11 +2,12 @@
 TeamVault — small-team private file storage backed by Telegram.
 """
 
-import os, io, sqlite3, time, secrets, hashlib
+import os, io, json, time, secrets, hashlib, uuid
 from functools import wraps
 from flask import Flask, request, jsonify, session, g, send_from_directory, send_file
 from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
+from supabase import create_client, Client
 
 load_dotenv()
 
@@ -29,104 +30,25 @@ else:
             pass
         app.secret_key = key
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "teamvault.db")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
-# ── DATABASE ───────────────────────────────────────────────────────────────
+_supabase: Client | None = None
 
-def get_db():
-    if "db" not in g:
-        g.db = sqlite3.connect(DB_PATH)
-        g.db.row_factory = sqlite3.Row
-        g.db.execute("PRAGMA journal_mode=WAL")
-        g.db.execute("PRAGMA foreign_keys=ON")
-    return g.db
+def get_supabase() -> Client:
+    global _supabase
+    if _supabase is None:
+        _supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    return _supabase
 
-@app.teardown_appcontext
-def close_db(exc):
-    db = g.pop("db", None)
-    if db:
-        db.close()
+def check_supabase():
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        print("ERROR: SUPABASE_URL and SUPABASE_SERVICE_KEY must be set in .env")
+        raise SystemExit(1)
 
-def init_db():
-    db = sqlite3.connect(DB_PATH)
-    db.execute("PRAGMA journal_mode=WAL")
-    db.execute("PRAGMA foreign_keys=ON")
-    db.executescript("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            role TEXT NOT NULL DEFAULT 'read_write',
-            created_at REAL NOT NULL DEFAULT (strftime('%s','now'))
-        );
-        CREATE TABLE IF NOT EXISTS orgs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            industry TEXT,
-            size TEXT,
-            contact_name TEXT,
-            contact_email TEXT,
-            contact_phone TEXT,
-            plan TEXT DEFAULT 'standard',
-            message TEXT,
-            status TEXT DEFAULT 'pending',
-            created_by INTEGER REFERENCES users(id),
-            chat_id TEXT,
-            channel_name TEXT,
-            created_at REAL NOT NULL DEFAULT (strftime('%s','now'))
-        );
-        CREATE TABLE IF NOT EXISTS folders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            parent_id INTEGER REFERENCES folders(id) ON DELETE CASCADE,
-            created_by INTEGER REFERENCES users(id),
-            created_at REAL NOT NULL DEFAULT (strftime('%s','now'))
-        );
-        CREATE TABLE IF NOT EXISTS files (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            filename TEXT NOT NULL,
-            folder_id INTEGER REFERENCES folders(id) ON DELETE SET NULL,
-            created_by INTEGER REFERENCES users(id),
-            is_deleted INTEGER DEFAULT 0,
-            deleted_at REAL,
-            deleted_by INTEGER REFERENCES users(id),
-            created_at REAL NOT NULL DEFAULT (strftime('%s','now'))
-        );
-        CREATE TABLE IF NOT EXISTS file_versions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-            version_no INTEGER NOT NULL,
-            size_bytes INTEGER NOT NULL,
-            sha256 TEXT,
-            storage_key TEXT NOT NULL,
-            uploaded_by INTEGER REFERENCES users(id),
-            uploaded_at REAL NOT NULL DEFAULT (strftime('%s','now')),
-            is_current INTEGER DEFAULT 1
-        );
-        CREATE TABLE IF NOT EXISTS logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts REAL NOT NULL DEFAULT (strftime('%s','now')),
-            user_id INTEGER,
-            username TEXT,
-            action TEXT NOT NULL,
-            target TEXT,
-            detail TEXT
-        );
-    """)
-    # Seed default admin if no users exist
-    cur = db.execute("SELECT COUNT(*) FROM users")
-    if cur.fetchone()[0] == 0:
-        db.execute(
-            "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-            ("admin", generate_password_hash("admin"), "admin"),
-        )
-    db.commit()
-    db.close()
-    # Ensure db file is group/world-writable to avoid permission issues
-    try:
-        os.chmod(DB_PATH, 0o664)
-    except OSError:
-        pass
+def set_rls_context(user_id, role):
+    sup = get_supabase()
+    sup.rpc("set_app_context", {"uid": user_id, "urole": role}).execute()
 
 # ── HELPERS ────────────────────────────────────────────────────────────────
 
@@ -141,20 +63,23 @@ def login_required(f):
 def current_user():
     if "user_id" not in session:
         return None
-    db = get_db()
-    return db.execute("SELECT * FROM users WHERE id=?", (session["user_id"],)).fetchone()
+    return {"id": session["user_id"], "org_id": session["org_id"], "role": session["role"], "username": session.get("username")}
 
 def log_action(action, target=None, detail=None):
+    sup = get_supabase()
     user = current_user()
-    db = get_db()
-    db.execute(
-        "INSERT INTO logs (user_id, username, action, target, detail) VALUES (?,?,?,?,?)",
-        (user["id"] if user else None, user["username"] if user else None, action, target, detail),
-    )
-    db.commit()
-
-def ensure_dirs():
-    os.makedirs(os.path.join(app.root_path, "uploads"), exist_ok=True)
+    details = {}
+    if target:
+        details["target"] = target
+    if detail:
+        details["detail"] = detail
+    sup.table("audit_logs").insert({
+        "org_id": user["org_id"] if user else None,
+        "actor_id": user["id"] if user else None,
+        "actor_role": user["role"] if user else "system",
+        "action": action,
+        "details": json.dumps(details) if details else None,
+    }).execute()
 
 # ── STATIC / PAGES ────────────────────────────────────────────────────────
 
@@ -185,12 +110,24 @@ def api_login():
     password = data.get("password", "")
     if not username or not password:
         return jsonify({"error": "Username and password required"}), 400
-    db = get_db()
-    user = db.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
-    if not user or not check_password_hash(user["password_hash"], password):
+    sup = get_supabase()
+    result = sup.table("users").select("*").eq("username", username).execute()
+    if not result.data:
+        return jsonify({"error": "Invalid credentials"}), 401
+    user = result.data[0]
+    if not check_password_hash(user["password_hash"], password):
         return jsonify({"error": "Invalid credentials"}), 401
     session["user_id"] = user["id"]
-    log_action("login")
+    session["org_id"] = user["org_id"]
+    session["role"] = user["role"]
+    session["username"] = user["username"]
+    # Write audit log
+    sup.table("audit_logs").insert({
+        "org_id": user["org_id"],
+        "actor_id": user["id"],
+        "actor_role": user["role"],
+        "action": "login",
+    }).execute()
     return jsonify({"id": user["id"], "username": user["username"], "role": user["role"]})
 
 @app.route("/api/logout", methods=["POST"])
@@ -207,38 +144,35 @@ def api_org_register():
     for f in required:
         if not data.get(f, "").strip():
             return jsonify({"error": f"{f.replace('_',' ').title()} is required"}), 400
-    db = get_db()
-    existing = db.execute("SELECT id FROM users WHERE username=?", (data["username"].strip(),)).fetchone()
-    if existing:
+    sup = get_supabase()
+    # Check username uniqueness
+    existing = sup.table("users").select("id").eq("username", data["username"].strip()).execute()
+    if existing.data:
         return jsonify({"error": "Username already taken"}), 400
-    # Create the admin user immediately
-    db.execute(
-        "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-        (data["username"].strip(), generate_password_hash(data["password"]), "admin"),
-    )
-    user_id = db.execute("SELECT id FROM users WHERE username=?", (data["username"].strip(),)).fetchone()["id"]
-    # Store org request
-    db.execute(
-        """INSERT INTO orgs (name, industry, size, contact_name, contact_email,
-           contact_phone, plan, message, status, created_by, chat_id, channel_name)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (
-            data["org_name"].strip(),
-            data.get("industry", ""),
-            data.get("size", ""),
-            data["contact_name"].strip(),
-            data["contact_email"].strip(),
-            data.get("contact_phone", ""),
-            data.get("plan", "standard"),
-            data.get("message", ""),
-            "approved",
-            user_id,
-            data.get("chat_id", ""),
-            data.get("channel_name", ""),
-        ),
-    )
-    db.commit()
-    return jsonify({"ok": True, "message": "Registration successful — you can now log in"})
+    # Create org
+    org_result = sup.table("organizations").insert({
+        "name": data["org_name"].strip(),
+        "industry": data.get("industry", ""),
+        "size": data.get("size", ""),
+        "telegram_chat_id": str(data.get("chat_id", "")),
+    }).execute()
+    org_id = org_result.data[0]["id"]
+    # Create admin user
+    sup.table("users").insert({
+        "org_id": org_id,
+        "username": data["username"].strip(),
+        "password_hash": generate_password_hash(data["password"]),
+        "role": "org_admin",
+    }).execute()
+    # Audit log
+    sup.table("audit_logs").insert({
+        "org_id": org_id,
+        "actor_id": None,
+        "actor_role": "system",
+        "action": "org_register",
+        "details": json.dumps({"org_name": data["org_name"].strip()}),
+    }).execute()
+    return jsonify({"ok": True, "message": "Registration successful"})
 
 # ── ORGS API ────────────────────────────────────────────────────────────────
 
@@ -726,9 +660,7 @@ def api_backup_delete(name):
 
 # ── INIT & RUN ─────────────────────────────────────────────────────────────
 
-init_db()
-ensure_dirs()
-ensure_backup_dir()
+check_supabase()
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
