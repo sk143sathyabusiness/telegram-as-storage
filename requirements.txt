@@ -1,6 +1,6 @@
 flask
-requests
+supabase-py
 cryptography
 python-dotenv
-telethon==1.26.0
-cryptg==0.1.0
+telethon
+requests               # kept only for backward compat during migration
