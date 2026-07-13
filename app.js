@@ -24,13 +24,13 @@ function fmt(bytes) {
 
 function fmtDate(ts) {
   if (!ts) return "—";
-  return new Date(ts * 1000).toLocaleString(undefined, {
+  return new Date(ts).toLocaleString(undefined, {
     month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"
   });
 }
 
 function fmtLogDate(ts) {
-  return new Date(ts * 1000).toLocaleString(undefined, {
+  return new Date(ts).toLocaleString(undefined, {
     month: "short", day: "numeric",
     hour: "2-digit", minute: "2-digit", second: "2-digit"
   });
@@ -340,15 +340,15 @@ async function refreshFiles() {
     tr.style.animationDelay = `${i * 30}ms`;
     tr.className = "row-enter";
     tr.innerHTML = `
-      <td><span class="file-name">${f.filename}</span></td>
+      <td><span class="file-name">${f.name}</span></td>
       <td><span class="file-meta">${v ? fmt(v.size_bytes) : "—"}</span></td>
-      <td><span class="version-badge">v${v ? v.version_no : "—"}</span></td>
+      <td><span class="version-badge">v${v ? v.version_number : "—"}</span></td>
       <td><span class="file-meta">${v ? (v.uploaded_by_name || "—") : "—"}</span></td>
       <td><span class="file-meta">${v ? fmtDate(v.uploaded_at) : "—"}</span></td>
       <td>
         <div class="action-row">
-          <button class="btn-sm" onclick="downloadFile(${f.id},'${f.filename.replace(/'/g,"\\'")}')">↓ Download</button>
-          <button class="btn-sm" onclick="openVersions(${f.id},'${f.filename.replace(/'/g,"\\'")}')">History</button>
+          <button class="btn-sm" onclick="downloadFile(${f.id},'${f.name.replace(/'/g,"\\'")}')">↓ Download</button>
+          <button class="btn-sm" onclick="openVersions(${f.id},'${f.name.replace(/'/g,"\\'")}')">History</button>
           ${currentUser?.role === "org_admin" || currentUser?.role === "master_admin"
             ? `<button class="btn-sm danger" onclick="deleteFile(${f.id})">Delete</button>`
             : ""}
@@ -428,7 +428,7 @@ async function loadVersions(fileId) {
   list.innerHTML = "";
 
   // Compute size diffs between consecutive versions
-  const sorted = [...versions].sort((a, b) => a.version_no - b.version_no);
+  const sorted = [...versions].sort((a, b) => a.version_number - b.version_number);
   for (let i = 0; i < versions.length; i++) {
     const v = versions[i];
     const prev = sorted[sorted.indexOf(v) - 1];
@@ -446,7 +446,7 @@ async function loadVersions(fileId) {
     const card = document.createElement("div");
     card.className = "version-card" + (v.is_current ? " current" : "");
     card.innerHTML = `
-      <div class="version-no">v${v.version_no}</div>
+      <div class="version-no">v${v.version_number}</div>
       <div class="version-info">
         <div class="size">${fmt(v.size_bytes)} ${changeHtml}</div>
         <div class="who">by ${v.uploaded_by_name || "—"} · ${fmtDate(v.uploaded_at)}</div>
@@ -456,7 +456,7 @@ async function loadVersions(fileId) {
         ${v.is_current
           ? `<span class="current-pill">Current</span>`
           : (currentUser?.role !== "read_only"
-              ? `<button class="btn-sm" onclick="restoreVersion(${fileId},${v.version_no})">↩ Restore</button>`
+              ? `<button class="btn-sm" onclick="restoreVersion(${fileId},${v.version_number})">↩ Restore</button>`
               : "")}
       </div>`;
     list.appendChild(card);
@@ -483,15 +483,15 @@ async function loadAllVersions() {
     const card = document.createElement("div");
     card.className = "version-card" + (v.is_current ? " current" : "");
     card.innerHTML = `
-      <div class="version-no">v${v.version_no}</div>
+      <div class="version-no">v${v.version_number}</div>
       <div class="version-info">
-        <div class="size"><strong>${v.filename}</strong> · ${fmt(v.size_bytes)}</div>
+        <div class="size"><strong>${v.name}</strong> · ${fmt(v.size_bytes)}</div>
         <div class="who">by ${v.uploaded_by_name || "—"} · ${fmtDate(v.uploaded_at)}</div>
         <div class="version-sha">${v.sha256 || "—"}</div>
       </div>
       <div class="action-row" style="flex-shrink:0">
         ${v.is_current ? `<span class="current-pill">Current</span>` : ""}
-        <button class="btn-sm" onclick="openVersions(${v.file_id},'${(v.filename||'').replace(/'/g,"\\'")}')">Open</button>
+        <button class="btn-sm" onclick="openVersions(${v.file_id},'${(v.name||'').replace(/'/g,"\\'")}')">Open</button>
       </div>`;
     list.appendChild(card);
   }
@@ -570,7 +570,7 @@ async function loadTrash() {
     const card = document.createElement("div");
     card.className = "trash-card";
     card.innerHTML = `
-      <span class="trash-name">${f.filename}</span>
+      <span class="trash-name">${f.name}</span>
       <span class="trash-who">deleted by ${f.deleted_by_name || "—"} · ${fmtDate(f.deleted_at)}</span>
       <div class="action-row">
         <button class="btn-sm" onclick="restoreFromTrash(${f.id})">↩ Restore</button>
