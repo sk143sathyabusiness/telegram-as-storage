@@ -1,132 +1,145 @@
-# TeamVault — Setup Guide
+# TeamVault — Encrypted File Storage via Telegram
 
-Private encrypted file storage for small teams.  
-**Storage backend: self-hosted MinIO** (replaces Telegram).
+Multi-tenant file storage using **Telegram channels** as the encrypted backend.
+Each Telegram channel = one Organisation. Metadata lives in **Supabase** (Postgres + RLS).
+Files are AES-256-GCM encrypted client-side — Telegram only ever sees ciphertext.
 
----
+## Architecture
 
-## What changed from the Telegram version
-
-| | Telegram version | MinIO version |
-|---|---|---|
-| Storage | Telegram bot API | Self-hosted MinIO (S3-compatible) |
-| Max file size | 4 GB (chunked across messages) | 4 GB (single object, no chunking needed) |
-| Chunking logic | Required | Removed — MinIO handles any size natively |
-| Setup | Bot token + chat ID | MinIO endpoint + access key + secret key |
-| DB schema | Unchanged | Unchanged — `telegram_file_id` column now stores MinIO object key |
-
-Everything else (auth, roles, versioning, encryption, logs) is identical.
-
----
-
-## 1. Run MinIO
-
-The fastest way is Docker:
-
-```bash
-docker run -d \
-  -p 9000:9000 \
-  -p 9001:9001 \
-  -e MINIO_ROOT_USER=minioadmin \
-  -e MINIO_ROOT_PASSWORD=changeme \
-  -v /data/minio:/data \
-  --name minio \
-  quay.io/minio/minio server /data --console-address ":9001"
+```
+Browser ──AES-256-GCM──→ Flask API ──Telethon──→ Telegram Channel
+                              │
+                              └──→ Supabase (metadata, permissions, audit logs)
 ```
 
-- **File API**: `http://your-server:9000`  
-- **Admin console**: `http://your-server:9001`
+- **No local disk storage** — all file bytes flow through in-memory buffers (`io.BytesIO`)
+- **Files >2GB** are split into ~1.9GB chunks, each stored as one Telegram message
+- **5 versions max** per file (FIFO, enforced by Postgres trigger)
+- **Folder-scoped permissions** via `permissions` table
+- **Full audit trail** — every mutation writes to `audit_logs`
 
-Then open the console, sign in, and create a **private bucket** named `teamvault`  
-(or whatever you set `TEAMVAULT_MINIO_BUCKET` to).
+## Stack
 
----
+| Layer | Technology |
+|-------|-----------|
+| Backend | Python + Flask (`app.py`) |
+| Telegram | Telethon userbot (`telegram_bot.py`) |
+| Metadata | Supabase (Postgres + RLS) |
+| Encryption | `cryptography` (AES-256-GCM, PBKDF2) |
+| Frontend | Plain JS/HTML (`app.js`, `index.html`) |
+| Config | `python-dotenv` (`.env`) |
 
-## 2. Configure
+## Setup
 
-```bash
-export TEAMVAULT_MINIO_ENDPOINT="your-server:9000"
-export TEAMVAULT_MINIO_ACCESS_KEY="minioadmin"
-export TEAMVAULT_MINIO_SECRET_KEY="changeme"
-export TEAMVAULT_MINIO_BUCKET="teamvault"
-export TEAMVAULT_MINIO_SECURE="false"   # "true" if MinIO is behind HTTPS/TLS
-```
-
----
-
-## 3. Install & run
-
-```bash
-pip install flask boto3 cryptography
-python app.py
-```
-
-Open `http://localhost:5000` — Flask serves `index.html` directly.
-
----
-
-## 4. Bootstrap the first admin (one-time)
+### 1. Prerequisites
 
 ```bash
-curl -X POST http://localhost:5000/api/bootstrap \
-  -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"choose-a-strong-password"}'
+pip install -r requirements.txt --break-system-packages  # Debian
 ```
 
-Log in, then use the **Team** panel to create accounts for teammates  
-with roles: `admin`, `read_write`, or `read_only`.
+### 2. Supabase
 
----
+Create a project at [supabase.com](https://supabase.com), then run `supabase_schema.sql`
+in the SQL editor. Copy your project URL and `service_role` key.
 
-## 5. The team encryption passphrase
+### 3. Telegram
 
-This is separate from login passwords. It's used by the browser to  
-**AES-256-GCM encrypt files before they leave your machine** — MinIO only  
-ever stores ciphertext. Share it with your team via a password manager  
-or in person, not over chat. Anyone without it cannot read downloaded files  
-even if they have direct MinIO access.
+Get `api_id` and `api_hash` from [my.telegram.org/apps](https://my.telegram.org/apps).
+Create a private channel and note its chat ID (e.g. `-1001234567890`).
 
----
+### 4. Configure
 
-## What's in the UI
+```bash
+cp .env.example .env
+```
 
-| Feature | Who can use it |
-|---|---|
-| Upload files (encrypted) | admin, read_write |
-| Download & decrypt files | all roles |
-| Per-file upload progress + ETA | all roles |
-| Folder tree navigation | all roles |
-| Version history + restore | admin, read_write |
-| Trash (soft-delete → restore or destroy) | admin |
-| Activity log (all actions) | admin |
-| Team member management | admin |
+Fill in `.env`:
+```env
+TELETHON_API_ID=your_api_id
+TELETHON_API_HASH=your_api_hash
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_KEY=your_service_role_key
+```
 
----
+### 5. Start
 
-## Role permissions
+```bash
+python3 app.py
+```
 
-| Action | admin | read_write | read_only |
-|---|---|---|---|
-| View & download files | ✓ | ✓ | ✓ |
-| Upload files | ✓ | ✓ | — |
-| Create folders | ✓ | ✓ | — |
-| Restore previous version | ✓ | ✓ | — |
-| Delete files (to trash) | ✓ | — | — |
-| Manage trash (restore/destroy) | ✓ | — | — |
-| View activity log | ✓ | — | — |
-| Manage team members | ✓ | — | — |
+Open `http://127.0.0.1:5000`. Register your organisation — the first user
+becomes `org_admin`. On first run, Telethon will prompt for your phone number
+and OTP to create `session_name.session`.
 
----
+## Roles
 
-## For production
+| Role | Scope | Permissions |
+|------|-------|-------------|
+| `master_admin` | Global (all orgs) | Everything |
+| `org_admin` | One org | Full control within org |
+| `read_write` | One org | Upload, download, create folders |
+| `read_only` | One org | View and download only |
 
-- **HTTPS**: run Flask behind nginx or Caddy, or deploy to a host that provides TLS.  
-  Set `TEAMVAULT_MINIO_SECURE=true` and point MinIO behind the same reverse proxy.
-- **Daily DB backup**: `teamvault.db` holds all metadata/permissions — copy it off-box  
-  (MinIO already durably stores file bytes). A simple cron:
-  ```bash
-  0 3 * * * cp /path/to/teamvault.db /backup/teamvault-$(date +\%F).db
-  ```
-- **MinIO backups**: enable MinIO's built-in replication or use `mc mirror` to sync  
-  the bucket to a second location.
-- **Rate limits**: none — MinIO is your own infrastructure.
+## API
+
+### Auth
+- `POST /api/login` — sign in
+- `POST /api/logout` — sign out
+- `GET /api/me` — current user
+
+### Files
+- `GET /api/files?folder_id=` — list files
+- `POST /api/files/upload` — upload (encrypted blob)
+- `GET /api/files/<uuid:file_id>/download` — download
+- `DELETE /api/files/<uuid:file_id>` — soft delete
+- `GET /api/files/<uuid:file_id>/versions` — version history
+- `POST /api/files/<uuid:file_id>/restore/<int:version_no>` — restore version
+
+### Folders
+- `GET /api/folders` — list folders
+- `POST /api/folders` — create folder
+
+### Organisation
+- `POST /api/org/register` — register new org
+- `GET /api/orgs` — list orgs (master_admin only)
+- `POST /api/orgs/<uuid:org_id>/approve` — approve org
+- `POST /api/orgs/<uuid:org_id>/reject` — reject org
+
+### Admin
+- `GET /api/users` — list users
+- `POST /api/users` — create user
+- `DELETE /api/users/<uuid:user_id>` — remove user
+- `GET /api/trash` — list trashed files
+- `POST /api/trash/<uuid:file_id>/restore` — restore from trash
+- `DELETE /api/trash/<uuid:file_id>` — permanently delete
+- `GET /api/logs` — activity log
+- `GET /api/versions/all` — all versions across org
+
+## Encryption
+
+Files are encrypted in the browser before upload:
+- Key derived from team passphrase via PBKDF2 (200k iterations, SHA-256)
+- AES-256-GCM with random 12-byte IV
+- IV prepended to ciphertext; server never sees plaintext or key
+- The passphrase must be shared with your team out-of-band
+
+## Key files
+
+| File | Purpose |
+|------|---------|
+| `app.py` | Flask API, Supabase queries, auth |
+| `telegram_bot.py` | Telethon chunked upload/download |
+| `supabase_schema.sql` | Postgres schema + RLS policies + triggers |
+| `app.js` / `index.html` | Dashboard |
+| `register.js` / `register.html` | Org registration |
+| `style.css` / `register.css` | Styles |
+| `session_name.session` | Telethon auth session (gitignored) |
+| `.secret_key` | Flask session key (auto-generated, gitignored) |
+
+## Commands
+
+```bash
+python3 app.py                  # dev server (port 5000)
+pip install -r requirements.txt --break-system-packages
+pkill -f "python3 app.py"       # kill stale processes
+```
