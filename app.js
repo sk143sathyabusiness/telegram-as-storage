@@ -50,7 +50,7 @@ async function doLogin() {
     document.getElementById("app").classList.add("visible");
     document.getElementById("topbar-user").textContent = currentUser.username;
     document.getElementById("topbar-role").textContent = currentUser.role;
-    if (currentUser.role !== "admin") {
+    if (currentUser.role !== "org_admin" && currentUser.role !== "master_admin") {
       document.getElementById("nav-trash").style.display = "none";
       document.getElementById("nav-logs").style.display  = "none";
       document.getElementById("nav-users").style.display = "none";
@@ -349,7 +349,7 @@ async function refreshFiles() {
         <div class="action-row">
           <button class="btn-sm" onclick="downloadFile(${f.id},'${f.filename.replace(/'/g,"\\'")}')">↓ Download</button>
           <button class="btn-sm" onclick="openVersions(${f.id},'${f.filename.replace(/'/g,"\\'")}')">History</button>
-          ${currentUser?.role === "admin"
+          ${currentUser?.role === "org_admin" || currentUser?.role === "master_admin"
             ? `<button class="btn-sm danger" onclick="deleteFile(${f.id})">Delete</button>`
             : ""}
         </div>
@@ -581,7 +581,7 @@ async function loadTrash() {
 }
 
 async function updateTrashCount() {
-  if (currentUser?.role !== "admin") return;
+  if (currentUser?.role !== "org_admin" && currentUser?.role !== "master_admin") return;
   const r = await fetch(API + "/trash");
   if (r.ok) {
     const items = await r.json();
@@ -704,11 +704,11 @@ document.addEventListener("keydown", e => {
       if (!e.ctrlKey && !e.metaKey) { e.preventDefault(); document.getElementById("file-input").click(); }
       break;
     case "1": showView("files"); break;
-    case "2": if (currentUser?.role === "admin") showView("trash"); break;
-    case "3": if (currentUser?.role === "admin") showView("logs"); break;
-    case "4": if (currentUser?.role === "admin") showView("users"); break;
-    case "5": if (currentUser?.role === "admin") showView("versions-all"); break;
-    case "6": if (currentUser?.role === "admin") showView("backup"); break;
+    case "2": if (currentUser?.role === "org_admin" || currentUser?.role === "master_admin") showView("trash"); break;
+    case "3": if (currentUser?.role === "org_admin" || currentUser?.role === "master_admin") showView("logs"); break;
+    case "4": if (currentUser?.role === "org_admin" || currentUser?.role === "master_admin") showView("users"); break;
+    case "5": if (currentUser?.role === "org_admin" || currentUser?.role === "master_admin") showView("versions-all"); break;
+    case "6": if (currentUser?.role === "org_admin" || currentUser?.role === "master_admin") showView("backup"); break;
     case "/": e.preventDefault(); document.getElementById("team-key").focus(); break;
   }
 });
@@ -774,7 +774,7 @@ fetch(API + "/me").then(async r => {
     document.getElementById("app").classList.add("visible");
     document.getElementById("topbar-user").textContent = currentUser.username;
     document.getElementById("topbar-role").textContent = currentUser.role;
-    if (currentUser.role !== "admin") {
+    if (currentUser.role !== "org_admin" && currentUser.role !== "master_admin") {
       document.getElementById("nav-trash").style.display = "none";
       document.getElementById("nav-logs").style.display  = "none";
       document.getElementById("nav-users").style.display = "none";
