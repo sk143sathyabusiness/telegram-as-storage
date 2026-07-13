@@ -2,7 +2,7 @@
 TeamVault — small-team private file storage backed by Telegram.
 """
 
-import os, io, json, time, secrets, hashlib, uuid as uuid_lib, asyncio
+import os, io, json, time, secrets, hashlib, uuid as uuid_lib
 from datetime import datetime
 from functools import wraps
 from flask import Flask, request, jsonify, session, g, send_from_directory, send_file
@@ -218,8 +218,8 @@ def api_orgs_get():
 @login_required
 def api_orgs_approve(org_id):
     user = current_user()
-    if user["role"] not in ("master_admin", "org_admin"):
-        return jsonify({"error": "Admin only"}), 403
+    if user["role"] != "master_admin":
+        return jsonify({"error": "Master admin only"}), 403
     sup = get_supabase()
     sup.table("organizations").update({"status": "approved"}).eq("id", org_id).execute()
     log_action("approve_org", f"org_id={org_id}")
@@ -229,8 +229,8 @@ def api_orgs_approve(org_id):
 @login_required
 def api_orgs_reject(org_id):
     user = current_user()
-    if user["role"] not in ("master_admin", "org_admin"):
-        return jsonify({"error": "Admin only"}), 403
+    if user["role"] != "master_admin":
+        return jsonify({"error": "Master admin only"}), 403
     sup = get_supabase()
     sup.table("organizations").update({"status": "rejected"}).eq("id", org_id).execute()
     log_action("reject_org", f"org_id={org_id}")
@@ -272,7 +272,7 @@ def api_files_get():
     sup = get_supabase()
     query = sup.table("files").select("id, name, folder_id, created_at").eq("org_id", user["org_id"]).eq("is_deleted", False)
     if folder_id:
-        query = query.eq("folder_id", int(folder_id))
+        query = query.eq("folder_id", folder_id)
     else:
         query = query.is_("folder_id", "null")
     rows = query.order("name").execute().data
@@ -303,7 +303,7 @@ def _store_file_blob(f, org_id):
     chat_id = int(org.data["telegram_chat_id"]) if org.data.get("telegram_chat_id") else None
     if not chat_id:
         raise RuntimeError("No Telegram chat_id configured for this organisation")
-    message_ids = asyncio.run(telegram_bot.upload_chunks(file_bytes, f.filename or "file", chat_id))
+    message_ids = telegram_bot.upload_chunks(file_bytes, f.filename or "file", chat_id)
     return message_ids, len(file_bytes)
 
 
@@ -316,7 +316,7 @@ def _load_file_blob(org_id, message_ids):
     chat_id = int(org.data["telegram_chat_id"]) if org.data.get("telegram_chat_id") else None
     if not chat_id:
         raise RuntimeError("No Telegram chat_id configured")
-    return asyncio.run(telegram_bot.download_chunks(chat_id, message_ids))
+    return telegram_bot.download_chunks(chat_id, message_ids)
 
 
 @app.route("/api/files/upload", methods=["POST"])
@@ -530,7 +530,7 @@ def api_users_post():
     log_action("create_user", username, f"role={role}")
     return jsonify({"ok": True})
 
-@app.route("/api/users/<int:user_id>", methods=["DELETE"])
+@app.route("/api/users/<uuid:user_id>", methods=["DELETE"])
 @login_required
 def api_users_delete(user_id):
     user = current_user()
@@ -557,12 +557,18 @@ def api_logs_get():
     limit = request.args.get("limit", 300, type=int)
     sup = get_supabase()
     data = sup.table("audit_logs").select("*").eq("org_id", user["org_id"]).order("created_at", desc=True).limit(limit).execute().data
+    actor_ids = list(set(r["actor_id"] for r in data if r.get("actor_id")))
+    user_map = {}
+    if actor_ids:
+        users = sup.table("users").select("id, username").in_("id", actor_ids).execute().data
+        user_map = {u["id"]: u["username"] for u in users}
     result = []
     for r in data:
         d = dict(r)
         d["ts"] = d.pop("created_at")
         d["user_id"] = d.pop("actor_id")
         d["role"] = d.pop("actor_role")
+        d["username"] = user_map.get(d["user_id"])
         result.append(d)
     return jsonify(result)
 
