@@ -1,145 +1,215 @@
-# TeamVault — Encrypted File Storage via Telegram
+<div align="center">
 
-Multi-tenant file storage using **Telegram channels** as the encrypted backend.
-Each Telegram channel = one Organisation. Metadata lives in **Supabase** (Postgres + RLS).
-Files are AES-256-GCM encrypted client-side — Telegram only ever sees ciphertext.
+# ⬡ TeamVault
 
-## Architecture
+**Private Encrypted File Storage · Backed by Telegram · Secured by Supabase**
+
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat&logo=python&logoColor=white)](https://python.org)
+[![Flask](https://img.shields.io/badge/Flask-3.0-000?style=flat&logo=flask&logoColor=white)](https://flask.palletsprojects.com)
+[![Supabase](https://img.shields.io/badge/Supabase-Postgres%20%2B%20RLS-3FCF8E?style=flat&logo=supabase&logoColor=white)](https://supabase.com)
+[![Telethon](https://img.shields.io/badge/Telethon-Userbot-26A5E4?style=flat&logo=telegram&logoColor=white)](https://docs.telethon.dev)
+[![AES-256-GCM](https://img.shields.io/badge/Encryption-AES--256--GCM-FF6B6B?style=flat)](https://cryptography.io)
+[![License](https://img.shields.io/badge/License-MIT-F5DEB3?style=flat)]()
+
+---
+
+</div>
+
+## ✦ Overview
+
+TeamVault lets your organisation store files securely without trusting any cloud provider. **Telegram channels** hold the encrypted ciphertext. **Supabase** manages metadata, permissions, and audit trails. Your browser encrypts everything with **AES-256-GCM** before it ever leaves your machine.
 
 ```
-Browser ──AES-256-GCM──→ Flask API ──Telethon──→ Telegram Channel
-                              │
-                              └──→ Supabase (metadata, permissions, audit logs)
+┌─────────────┐     AES-256-GCM     ┌──────────┐     Telethon     ┌──────────────────┐
+│   Browser   │ ──────────────────→ │  Flask   │ ──────────────→ │  Telegram Channel │
+│ (encrypts)  │                     │  API     │                  │  (ciphertext)     │
+└─────────────┘                     └────┬─────┘                  └──────────────────┘
+                                         │
+                                         │ Supabase
+                                         ▼
+                                 ┌────────────────┐
+                                 │   Supabase     │
+                                 │  · metadata    │
+                                 │  · permissions │
+                                 │  · audit logs  │
+                                 │  · RLS         │
+                                 └────────────────┘
 ```
 
-- **No local disk storage** — all file bytes flow through in-memory buffers (`io.BytesIO`)
-- **Files >2GB** are split into ~1.9GB chunks, each stored as one Telegram message
-- **5 versions max** per file (FIFO, enforced by Postgres trigger)
-- **Folder-scoped permissions** via `permissions` table
-- **Full audit trail** — every mutation writes to `audit_logs`
+---
 
-## Stack
+## ✦ Features
 
-| Layer | Technology |
-|-------|-----------|
-| Backend | Python + Flask (`app.py`) |
-| Telegram | Telethon userbot (`telegram_bot.py`) |
-| Metadata | Supabase (Postgres + RLS) |
-| Encryption | `cryptography` (AES-256-GCM, PBKDF2) |
-| Frontend | Plain JS/HTML (`app.js`, `index.html`) |
-| Config | `python-dotenv` (`.env`) |
+<div align="center">
 
-## Setup
+| | Feature | Detail |
+|---|---|---|
+| 🔒 | **Zero-trust encryption** | AES-256-GCM client-side, server never sees plaintext |
+| 📁 | **Multi-tenant** | Each Telegram channel = one isolated organisation |
+| 🧩 | **Chunked uploads** | Files >2GB split into ~1.9GB chunks automatically |
+| 📋 | **Version history** | 5 versions per file (FIFO), restore any version |
+| 👥 | **Role-based access** | `master_admin` → `org_admin` → `read_write` → `read_only` |
+| 📊 | **Folder-scoped permissions** | Granular access via `permissions` table |
+| 🕐 | **Full audit trail** | Every mutation logged to `audit_logs` |
+| 🚀 | **Upload progress** | Per-file ETA, speed, and overall progress |
+| 📂 | **Folder upload** | Drag & drop or webkitdirectory support |
+| 🗑 | **Soft delete + trash** | Restore or permanently destroy |
 
-### 1. Prerequisites
+</div>
+
+---
+
+## ✦ Quick Start
+
+### Prerequisites
 
 ```bash
-pip install -r requirements.txt --break-system-packages  # Debian
+pip install -r requirements.txt --break-system-packages
 ```
 
-### 2. Supabase
+### Supabase Setup
 
-Create a project at [supabase.com](https://supabase.com), then run `supabase_schema.sql`
-in the SQL editor. Copy your project URL and `service_role` key.
+1. Create a project at [supabase.com](https://supabase.com)
+2. Open **SQL Editor** → paste & run [`supabase_schema.sql`](supabase_schema.sql)
+3. Copy your **Project URL** and **`service_role` key** from Project Settings → API
 
-### 3. Telegram
+### Telegram Setup
 
-Get `api_id` and `api_hash` from [my.telegram.org/apps](https://my.telegram.org/apps).
-Create a private channel and note its chat ID (e.g. `-1001234567890`).
+1. Go to [my.telegram.org/apps](https://my.telegram.org/apps)
+2. Create an app → copy **`api_id`** and **`api_hash`**
+3. Create a **private Telegram channel** → copy its chat ID (e.g. `-1001234567890`)
 
-### 4. Configure
+### Configure & Run
 
 ```bash
 cp .env.example .env
-```
+# Fill in TELETHON_API_ID, TELETHON_API_HASH, SUPABASE_URL, SUPABASE_SERVICE_KEY
 
-Fill in `.env`:
-```env
-TELETHON_API_ID=your_api_id
-TELETHON_API_HASH=your_api_hash
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SERVICE_KEY=your_service_role_key
-```
-
-### 5. Start
-
-```bash
 python3 app.py
 ```
 
-Open `http://127.0.0.1:5000`. Register your organisation — the first user
-becomes `org_admin`. On first run, Telethon will prompt for your phone number
-and OTP to create `session_name.session`.
+Open **http://127.0.0.1:5000** — first run will prompt for Telegram phone + OTP
+to create `session_name.session`.
 
-## Roles
+---
 
-| Role | Scope | Permissions |
-|------|-------|-------------|
-| `master_admin` | Global (all orgs) | Everything |
-| `org_admin` | One org | Full control within org |
-| `read_write` | One org | Upload, download, create folders |
-| `read_only` | One org | View and download only |
+## ✦ Role System
 
-## API
+```
+master_admin  ──→  Global access, all orgs
+org_admin     ──→  Full control within one org
+read_write    ──→  Upload, download, create folders
+read_only     ──→  View and download only
+```
+
+| Action | master_admin | org_admin | read_write | read_only |
+|---|---|---|---|---|
+| View & download | ✓ | ✓ | ✓ | ✓ |
+| Upload files | ✓ | ✓ | ✓ | — |
+| Create folders | ✓ | ✓ | ✓ | — |
+| Restore versions | ✓ | ✓ | ✓ | — |
+| Soft delete | ✓ | ✓ | — | — |
+| Manage trash | ✓ | ✓ | — | — |
+| View audit logs | ✓ | ✓ | — | — |
+| Manage users | ✓ | ✓ | — | — |
+| Cross-org access | ✓ | — | — | — |
+
+---
+
+## ✦ API Reference
 
 ### Auth
-- `POST /api/login` — sign in
-- `POST /api/logout` — sign out
-- `GET /api/me` — current user
+```
+POST /api/login                          Sign in
+POST /api/logout                         Sign out
+GET  /api/me                             Current user
+```
 
-### Files
-- `GET /api/files?folder_id=` — list files
-- `POST /api/files/upload` — upload (encrypted blob)
-- `GET /api/files/<uuid:file_id>/download` — download
-- `DELETE /api/files/<uuid:file_id>` — soft delete
-- `GET /api/files/<uuid:file_id>/versions` — version history
-- `POST /api/files/<uuid:file_id>/restore/<int:version_no>` — restore version
-
-### Folders
-- `GET /api/folders` — list folders
-- `POST /api/folders` — create folder
+### Files & Folders
+```
+GET    /api/folders                      List folders
+POST   /api/folders                      Create folder
+GET    /api/files?folder_id=             List files
+POST   /api/files/upload                 Upload encrypted file
+GET    /api/files/<uuid:id>/download     Download file
+DELETE /api/files/<uuid:id>              Soft delete
+GET    /api/files/<uuid:id>/versions     Version history
+POST   /api/files/<uuid:id>/restore/<int:ver>  Restore version
+```
 
 ### Organisation
-- `POST /api/org/register` — register new org
-- `GET /api/orgs` — list orgs (master_admin only)
-- `POST /api/orgs/<uuid:org_id>/approve` — approve org
-- `POST /api/orgs/<uuid:org_id>/reject` — reject org
+```
+POST /api/org/register                   Register new org
+GET  /api/orgs                           List orgs
+POST /api/orgs/<uuid:id>/approve         Approve org
+POST /api/orgs/<uuid:id>/reject          Reject org
+```
 
-### Admin
-- `GET /api/users` — list users
-- `POST /api/users` — create user
-- `DELETE /api/users/<uuid:user_id>` — remove user
-- `GET /api/trash` — list trashed files
-- `POST /api/trash/<uuid:file_id>/restore` — restore from trash
-- `DELETE /api/trash/<uuid:file_id>` — permanently delete
-- `GET /api/logs` — activity log
-- `GET /api/versions/all` — all versions across org
+### Administration
+```
+GET    /api/users                        List users
+POST   /api/users                        Create user
+DELETE /api/users/<uuid:id>              Delete user
+GET    /api/trash                        List trashed files
+POST   /api/trash/<uuid:id>/restore     Restore from trash
+DELETE /api/trash/<uuid:id>              Permanently delete
+GET    /api/logs                         Activity log
+GET    /api/versions/all                 All versions (org-wide)
+```
 
-## Encryption
+---
 
-Files are encrypted in the browser before upload:
-- Key derived from team passphrase via PBKDF2 (200k iterations, SHA-256)
-- AES-256-GCM with random 12-byte IV
-- IV prepended to ciphertext; server never sees plaintext or key
-- The passphrase must be shared with your team out-of-band
+## ✦ Encryption Flow
 
-## Key files
+```
+1. User enters team passphrase in the browser
+2. PBKDF2 derives AES-256 key (200k iterations, SHA-256)
+3. Random 12-byte IV generated
+4. File encrypted with AES-256-GCM
+5. IV prepended to ciphertext → sent to Flask API
+6. Flask stores ciphertext in Telegram channel
+7. On download: stream raw ciphertext → browser decrypts
+```
 
-| File | Purpose |
-|------|---------|
-| `app.py` | Flask API, Supabase queries, auth |
-| `telegram_bot.py` | Telethon chunked upload/download |
-| `supabase_schema.sql` | Postgres schema + RLS policies + triggers |
-| `app.js` / `index.html` | Dashboard |
-| `register.js` / `register.html` | Org registration |
-| `style.css` / `register.css` | Styles |
-| `session_name.session` | Telethon auth session (gitignored) |
-| `.secret_key` | Flask session key (auto-generated, gitignored) |
+> ⚠️ **Never send the passphrase to the server.** Share it with your team
+> via a password manager or in person.
 
-## Commands
+---
+
+## ✦ Project Structure
+
+```
+├── app.py                    Flask API + Supabase queries
+├── telegram_bot.py           Telethon chunked upload/download
+├── supabase_schema.sql       Postgres schema + RLS + triggers
+├── app.js / index.html       Dashboard frontend
+├── register.js / register.html   Org registration flow
+├── style.css / register.css  Styles
+├── .env.example              Config template
+├── requirements.txt          Python dependencies
+├── AGENTS.md                 Agent instruction file
+└── session_name.session      Telethon auth (gitignored)
+```
+
+---
+
+## ✦ Development
 
 ```bash
-python3 app.py                  # dev server (port 5000)
+python3 app.py                  # Start dev server on :5000
 pip install -r requirements.txt --break-system-packages
-pkill -f "python3 app.py"       # kill stale processes
+pkill -f "python3 app.py"       # Kill stale processes
 ```
+
+Flask debug mode auto-reloads on file changes. Session persistence is handled
+by `.secret_key` (auto-generated on first run).
+
+---
+
+<div align="center">
+
+**Built with** ⬡ **by the TeamVault project**
+
+[Report Bug](https://github.com/sk143sathyabusiness/telegram-as-storage/issues) · [Request Feature](https://github.com/sk143sathyabusiness/telegram-as-storage/issues)
+
+</div>
