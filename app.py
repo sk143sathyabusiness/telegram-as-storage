@@ -5,7 +5,7 @@ TeamVault — small-team private file storage backed by Telegram.
 import os, io, json, time, secrets, hashlib, uuid as uuid_lib
 from datetime import datetime
 from functools import wraps
-from flask import Flask, request, jsonify, session, g, send_from_directory, send_file
+from flask import Flask, request, jsonify, session, g, send_from_directory, send_file, Response, stream_with_context
 from werkzeug.routing import BaseConverter
 from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
@@ -16,6 +16,9 @@ load_dotenv()
 import telegram_bot
 
 app = Flask(__name__)
+
+# Support large file uploads (default 10GB)
+app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get('MAX_UPLOAD_SIZE', 10 * 1024 * 1024 * 1024))
 
 class UUIDConverter(BaseConverter):
     def to_python(self, value):
@@ -30,7 +33,7 @@ if os.getenv("SECRET_KEY"):
     app.secret_key = os.getenv("SECRET_KEY")
 else:
     try:
-        app.secret_key = open(SECRET_KEY_FILE, "rb").read()
+        app.secret_key = open(SECRET_KEY_FILE, "r").read()
     except (OSError, IOError):
         key = secrets.token_hex(32)
         try:
@@ -96,7 +99,9 @@ def log_action(action, target=None, detail=None):
 
 def _check_permission(sup, user_id, org_id, folder_id=None):
     """Check user's effective permission for a folder. Returns level or None."""
-    user_result = sup.table("users").select("role").eq("id", user_id).single().execute()
+    user_result = sup.table("users").select("role").eq("id", user_id).maybe_single().execute()
+    if not user_result.data:
+        return None
     role = user_result.data["role"]
     if role == "master_admin":
         return "org_admin"  # full access
@@ -109,6 +114,13 @@ def _check_permission(sup, user_id, org_id, folder_id=None):
         return perm.data["permission_level"]
     return role  # fall back to user's org role
 
+def _require_active_org(sup, org_id):
+    """Return error response if org is not active, or None if OK."""
+    org = sup.table("organizations").select("status").eq("id", org_id).maybe_single().execute()
+    if not org.data or org.data["status"] != "active":
+        return jsonify({"error": "Organisation is not active"}), 403
+    return None
+
 # ── STATIC / PAGES ────────────────────────────────────────────────────────
 
 @app.route("/")
@@ -119,8 +131,18 @@ def index():
 def register_page():
     return send_from_directory(app.root_path, "register.html")
 
+_BLOCKED_STATIC = {
+    ".env", ".env.example", ".secret_key", ".git", ".gitignore",
+    "app.py", "telegram_bot.py", "supabase_schema.sql",
+    "requirements.txt", "register.js", "register.css",
+}
+
 @app.route("/<path:filename>")
 def static_files(filename):
+    parts = filename.replace("\\", "/").split("/")
+    for part in parts:
+        if part in _BLOCKED_STATIC or part.endswith(".session"):
+            return jsonify({"error": "not found"}), 404
     return send_from_directory(app.root_path, filename)
 
 # ── AUTH API ───────────────────────────────────────────────────────────────
@@ -243,6 +265,9 @@ def api_orgs_reject(org_id):
 def api_folders_get():
     user = current_user()
     sup = get_supabase()
+    err = _require_active_org(sup, user["org_id"])
+    if err:
+        return err
     data = sup.table("folders").select("id, name, parent_id").eq("org_id", user["org_id"]).order("name").execute().data
     return jsonify([dict(r) for r in data])
 
@@ -270,6 +295,12 @@ def api_files_get():
     user = current_user()
     folder_id = request.args.get("folder_id")
     sup = get_supabase()
+    err = _require_active_org(sup, user["org_id"])
+    if err:
+        return err
+    perm = _check_permission(sup, user["id"], user["org_id"], folder_id)
+    if not perm:
+        return jsonify({"error": "Permission denied"}), 403
     query = sup.table("files").select("id, name, folder_id, created_at").eq("org_id", user["org_id"]).eq("is_deleted", False)
     if folder_id:
         query = query.eq("folder_id", folder_id)
@@ -294,8 +325,11 @@ def api_files_get():
     return jsonify(result)
 
 def _store_file_blob(f, org_id):
-    """Upload encrypted bytes to org's Telegram channel. Returns (message_ids, size_bytes)."""
-    file_bytes = f.read()
+    """Upload encrypted bytes to org's Telegram channel. Returns (message_ids, size_bytes).
+
+    Reads the uploaded file in a streaming fashion to keep peak memory
+    close to CHUNK_SIZE_BYTES (~1.9 GB) rather than the full file size.
+    """
     if not telegram_bot.is_configured():
         raise RuntimeError("Telegram not configured")
     sup = get_supabase()
@@ -303,8 +337,9 @@ def _store_file_blob(f, org_id):
     chat_id = int(org.data["telegram_chat_id"]) if org.data.get("telegram_chat_id") else None
     if not chat_id:
         raise RuntimeError("No Telegram chat_id configured for this organisation")
-    message_ids = telegram_bot.upload_chunks(file_bytes, f.filename or "file", chat_id)
-    return message_ids, len(file_bytes)
+    message_ids = telegram_bot.upload_chunks_streaming(f.stream, f.filename or "file", chat_id)
+    size_bytes = f.content_length or 0
+    return message_ids, size_bytes
 
 
 def _load_file_blob(org_id, message_ids):
@@ -322,7 +357,7 @@ def _load_file_blob(org_id, message_ids):
 @app.route("/api/files/upload", methods=["POST"])
 @login_required
 def api_files_upload():
-    user = session  # user_id, org_id, role set in session
+    user = current_user()
     if user["role"] == "read_only":
         return jsonify({"error": "Permission denied"}), 403
     f = request.files.get("file")
@@ -332,7 +367,10 @@ def api_files_upload():
     if not f:
         return jsonify({"error": "No file provided"}), 400
     sup = get_supabase()
-    perm = _check_permission(sup, user["user_id"], user["org_id"], folder_id)
+    err = _require_active_org(sup, user["org_id"])
+    if err:
+        return err
+    perm = _check_permission(sup, user["id"], user["org_id"], folder_id)
     if not perm or perm == "read_only":
         return jsonify({"error": "Permission denied"}), 403
     try:
@@ -365,12 +403,12 @@ def api_files_upload():
         "size_bytes": size_bytes,
         "sha256": sha256,
         "message_ids": json.dumps(message_ids),
-        "uploaded_by": user["user_id"],
+        "uploaded_by": user["id"],
         "is_current": True,
     }).execute()
     sup.table("audit_logs").insert({
         "org_id": user["org_id"],
-        "actor_id": user["user_id"],
+        "actor_id": user["id"],
         "actor_role": user["role"],
         "action": "upload",
         "target_type": "file",
@@ -384,24 +422,37 @@ def api_files_upload():
 def api_files_download(file_id):
     sup = get_supabase()
     user = current_user()
+    err = _require_active_org(sup, user["org_id"])
+    if err:
+        return err
     file_result = sup.table("files").select("id, name, org_id, folder_id").eq("id", file_id).execute()
     if not file_result.data:
         return jsonify({"error": "File not found"}), 404
     fdata = file_result.data[0]
     perm = _check_permission(sup, user["id"], user["org_id"], fdata.get("folder_id"))
-    if not perm or perm == "read_only":
+    if not perm:
         return jsonify({"error": "Permission denied"}), 403
     ver_result = sup.table("file_versions").select("*").eq("file_id", file_id).eq("is_current", True).execute()
     if not ver_result.data:
         return jsonify({"error": "No current version"}), 404
     ver = ver_result.data[0]
     message_ids = json.loads(ver["message_ids"])
-    try:
-        file_bytes = _load_file_blob(fdata["org_id"], message_ids)
-    except Exception as e:
-        return jsonify({"error": f"File not found: {e}"}), 404
+    size_bytes = ver["size_bytes"]
+    if not telegram_bot.is_configured():
+        return jsonify({"error": "Telegram not configured"}), 500
+    sup2 = get_supabase()
+    org = sup2.table("organizations").select("telegram_chat_id").eq("id", fdata["org_id"]).single().execute()
+    chat_id = int(org.data["telegram_chat_id"]) if org.data.get("telegram_chat_id") else None
+    if not chat_id:
+        return jsonify({"error": "No Telegram chat_id configured"}), 500
+    def generate():
+        for chunk in telegram_bot.download_chunks_streaming(chat_id, message_ids):
+            yield chunk
     log_action("download", fdata["name"])
-    return send_file(io.BytesIO(file_bytes), download_name=fdata["name"], as_attachment=True)
+    resp = Response(stream_with_context(generate()), mimetype="application/octet-stream")
+    resp.headers["Content-Disposition"] = f'attachment; filename="{fdata["name"]}"'
+    resp.headers["Content-Length"] = str(size_bytes)
+    return resp
 
 @app.route("/api/files/<uuid:file_id>", methods=["DELETE"])
 @login_required
@@ -488,6 +539,20 @@ def api_trash_hard_delete(file_id):
         return jsonify({"error": "Admin only"}), 403
     sup = get_supabase()
     f = sup.table("files").select("name").eq("id", file_id).maybe_single().execute()
+    versions = sup.table("file_versions").select("message_ids").eq("file_id", file_id).execute().data
+    if telegram_bot.is_configured() and versions:
+        org = sup.table("organizations").select("telegram_chat_id").eq("id", user["org_id"]).single().execute()
+        chat_id = int(org.data["telegram_chat_id"]) if org.data and org.data.get("telegram_chat_id") else None
+        if chat_id:
+            all_message_ids = []
+            for v in versions:
+                if v.get("message_ids"):
+                    all_message_ids.extend(json.loads(v["message_ids"]))
+            if all_message_ids:
+                try:
+                    telegram_bot.delete_file(chat_id, all_message_ids)
+                except Exception:
+                    pass
     sup.table("file_versions").delete().eq("file_id", file_id).execute()
     sup.table("files").delete().eq("id", file_id).eq("org_id", user["org_id"]).execute()
     log_action("permanent_delete", f.data["name"] if f.data else None)
