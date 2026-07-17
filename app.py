@@ -73,7 +73,7 @@ def set_rls_context(user_id, role):
     sup.rpc("set_app_context", {"uid": user_id, "urole": role}).execute()
 
 def _tg_configured():
-    return telegram_bot is not None and _tg_configured()
+    return telegram_bot is not None and telegram_bot.is_configured()
 
 # ── HELPERS ────────────────────────────────────────────────────────────────
 
@@ -313,6 +313,7 @@ def api_folders_get():
     if user["role"] in ("org_admin", "master_admin"):
         return jsonify([dict(r) for r in data])
     visible_ids = set()
+    folders_map = {f["id"]: f for f in data}
     for f in data:
         fid = f["id"]
         if not f.get("parent_id"):
@@ -320,6 +321,19 @@ def api_folders_get():
             if perm:
                 visible_ids.add(fid)
                 _add_ancestors(f, data, visible_ids)
+    changed = True
+    while changed:
+        changed = False
+        for f in data:
+            fid = f["id"]
+            if fid in visible_ids:
+                continue
+            parent_id = f.get("parent_id")
+            if parent_id and parent_id in visible_ids:
+                perm = _check_permission(sup, user["id"], user["org_id"], fid)
+                if perm:
+                    visible_ids.add(fid)
+                    changed = True
     filtered = [dict(f) for f in data if f["id"] in visible_ids]
     return jsonify(filtered)
 
@@ -729,6 +743,7 @@ def api_versions(file_id):
     result = []
     for r in rows:
         d = dict(r)
+        d["message_ids"] = _parse_message_ids(d.get("message_ids"))
         uploader = sup.table("users").select("username").eq("id", r["uploaded_by"]).maybe_single().execute()
         d["uploaded_by_name"] = uploader.data["username"] if uploader and uploader.data else None
         d["is_current"] = bool(r["is_current"])

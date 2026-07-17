@@ -1121,7 +1121,7 @@ function emailFile(fileId, filename) {
   document.getElementById("email-modal").style.display = "flex";
 }
 
-async function sendEmail() {
+async function sendEmail(event) {
   if (!_emailFileId) return;
   const recipients = document.getElementById("email-recipients").value.trim();
   const message = document.getElementById("email-message").value;
@@ -1158,7 +1158,7 @@ function previewFile(fileId, filename, sizeBytes) {
     css:"text/css", js:"text/javascript", py:"text/x-python",
     java:"text/x-java", c:"text/x-c", cpp:"text/x-cpp", h:"text/x-c",
     xml:"text/xml", yaml:"text/yaml", yml:"text/yaml", sh:"text/x-shellscript",
-    mp4:"video/mp4", webm:"video/webm", ogg:"video/ogg",
+    mp4:"video/mp4", webm:"video/webm",
     mp3:"audio/mpeg", wav:"audio/wav", ogg:ext==="ogg"?"audio/ogg":"video/ogg",
   };
   if (["png","jpg","jpeg","gif","svg","webp","bmp"].includes(ext)) {
@@ -1239,7 +1239,7 @@ function loadPreviewAsText(container, ext) {
 }
 
 function escapeHtml(str) {
-  return str.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  return String(str ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
 }
 
 // ── WORD PREVIEW (DOCX → HTML via mammoth.js) ──────────────────────────
