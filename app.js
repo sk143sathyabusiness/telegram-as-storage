@@ -383,14 +383,14 @@ async function refreshFiles() {
       <td><span class="file-meta">${v ? fmtDate(v.uploaded_at) : "—"}</span></td>
       <td>
         <div class="action-row">
-          <button class="btn-sm" onclick="previewFile(${f.id},'${f.name.replace(/'/g,"\\'")}','${v ? v.size_bytes : 0}')" title="Preview">👁</button>
-          <button class="btn-sm" onclick="shareFile(${f.id},'${f.name.replace(/'/g,"\\'")}')">Share</button>
-          <button class="btn-sm" onclick="emailFile(${f.id},'${f.name.replace(/'/g,"\\'")}')">Email</button>
-          <button class="btn-sm" onclick="editFile(${f.id},'${f.name.replace(/'/g,"\\'")}','${v ? v.size_bytes : 0}')">Edit</button>
-          <button class="btn-sm" onclick="downloadFile(${f.id},'${f.name.replace(/'/g,"\\'")}')">↓</button>
-          <button class="btn-sm" onclick="openVersions(${f.id},'${f.name.replace(/'/g,"\\'")}')">History</button>
+          <button class="btn-sm" onclick="previewFile('${f.id}','${f.name.replace(/'/g,"\\'")}','${v ? v.size_bytes : 0}')" title="Preview">👁</button>
+          <button class="btn-sm" onclick="shareFile('${f.id}','${f.name.replace(/'/g,"\\'")}')">Share</button>
+          <button class="btn-sm" onclick="emailFile('${f.id}','${f.name.replace(/'/g,"\\'")}')">Email</button>
+          <button class="btn-sm" onclick="editFile('${f.id}','${f.name.replace(/'/g,"\\'")}','${v ? v.size_bytes : 0}')">Edit</button>
+          <button class="btn-sm" onclick="downloadFile('${f.id}','${f.name.replace(/'/g,"\\'")}')">↓</button>
+          <button class="btn-sm" onclick="openVersions('${f.id}','${f.name.replace(/'/g,"\\'")}')">History</button>
           ${currentUser?.role === "org_admin" || currentUser?.role === "master_admin"
-            ? `<button class="btn-sm danger" onclick="deleteFile(${f.id})">Delete</button>`
+            ? `<button class="btn-sm danger" onclick="deleteFile('${f.id}')">Delete</button>`
             : ""}
         </div>
       </td>`;
@@ -499,7 +499,7 @@ async function loadVersions(fileId) {
         ${v.is_current
           ? `<span class="current-pill">Current</span>`
           : (currentUser?.role !== "read_only"
-              ? `<button class="btn-sm" onclick="restoreVersion(${fileId},${v.version_number})">↩ Restore</button>`
+              ? `<button class="btn-sm" onclick="restoreVersion('${fileId}',${v.version_number})">↩ Restore</button>`
               : "")}
       </div>`;
     list.appendChild(card);
@@ -528,13 +528,13 @@ async function loadAllVersions() {
     card.innerHTML = `
       <div class="version-no">v${v.version_number}</div>
       <div class="version-info">
-        <div class="size"><strong>${v.name}</strong> · ${fmt(v.size_bytes)}</div>
+        <div class="size"><strong>${v.filename}</strong> · ${fmt(v.size_bytes)}</div>
         <div class="who">by ${v.uploaded_by_name || "—"} · ${fmtDate(v.uploaded_at)}</div>
         <div class="version-sha">${v.sha256 || "—"}</div>
       </div>
       <div class="action-row" style="flex-shrink:0">
         ${v.is_current ? `<span class="current-pill">Current</span>` : ""}
-        <button class="btn-sm" onclick="openVersions(${v.file_id},'${(v.name||'').replace(/'/g,"\\'")}')">Open</button>
+        <button class="btn-sm" onclick="openVersions('${v.file_id}','${(v.filename||'').replace(/'/g,"\\'")}')">Open</button>
       </div>`;
     list.appendChild(card);
   }
@@ -617,8 +617,8 @@ async function loadTrash() {
       <span class="trash-name">${f.name}</span>
       <span class="trash-who">deleted by ${f.deleted_by_name || "—"} · ${fmtDate(f.deleted_at)}</span>
       <div class="action-row">
-        <button class="btn-sm" onclick="restoreFromTrash(${f.id})">↩ Restore</button>
-        <button class="btn-sm danger" onclick="hardDelete(${f.id})">Destroy</button>
+        <button class="btn-sm" onclick="restoreFromTrash('${f.id}')">↩ Restore</button>
+        <button class="btn-sm danger" onclick="hardDelete('${f.id}')">Destroy</button>
       </div>`;
     list.appendChild(card);
   }
