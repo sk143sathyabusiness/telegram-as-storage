@@ -1508,15 +1508,22 @@ def api_backup_delete(name):
 # ── INIT & RUN ─────────────────────────────────────────────────────────────
 
 def _ensure_backups_table():
-    """Create the backups table if it doesn't exist."""
+    """Create the backups table if it doesn't exist + fix grants."""
     sup = get_supabase()
     try:
-        sup.table("backups").select("id").limit(1).execute()
-        return
+        sup.table("users").select("id").limit(1).execute()
     except Exception as e:
-        if "PGRST205" not in str(e):
+        if "42501" in str(e) or "permission denied" in str(e).lower():
+            print("[MIGRATE] service_role lacks GRANT privileges on tables")
+            _print_grants_sql()
+        return
+    try:
+        sup.table("backups").select("id").limit(1).execute()
+    except Exception as e:
+        if "PGRST205" in str(e):
+            print("[MIGRATE] backups table missing - creating now...")
+        else:
             return
-        print("[MIGRATE] backups table missing — creating now...")
     sql = """CREATE TABLE IF NOT EXISTS backups (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
@@ -1554,6 +1561,17 @@ CREATE INDEX IF NOT EXISTS idx_backups_org_id ON backups(org_id);"""
         print(f"[MIGRATE] Auto-create failed: {e2}")
         print("[MIGRATE] Paste this SQL into the Supabase Dashboard -> SQL Editor -> Run:")
         print(sql)
+
+def _print_grants_sql():
+    sql = """-- Fix: Grant service_role full access to all tables
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO service_role;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT USAGE, SELECT ON SEQUENCES TO service_role;"""
+    print("[MIGRATE] Paste this SQL into Supabase Dashboard -> SQL Editor -> Run:")
+    print(sql)
 
 check_supabase()
 
