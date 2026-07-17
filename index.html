@@ -110,8 +110,8 @@
           <button class="btn-sm" onclick="refreshFiles(); toast('Files refreshed')" title="Refresh file list">
             ↻
           </button>
-          <input type="file" id="file-input" multiple onchange="uploadFiles()">
-          <input type="file" id="folder-input" webkitdirectory multiple onchange="uploadFiles()" style="display:none">
+          <input type="file" id="file-input" multiple onchange="uploadFiles(this)">
+          <input type="file" id="folder-input" webkitdirectory multiple onchange="uploadFiles(this)" style="display:none">
         </div>
 
         <div class="upload-progress-area" id="progress-area">
@@ -175,28 +175,73 @@
         </div>
       </div>
 
-      <!-- users panel -->
+      <!-- users panel (with tabs) -->
       <div id="view-users" style="display:none">
         <div class="panel">
           <div class="panel-header">
-            <div class="panel-title">👥 Team members</div>
+            <div class="panel-title">👥 Team Management</div>
+            <button class="btn-sm" onclick="loadUserManagement(); loadFolderAccess()">↻ Refresh</button>
           </div>
-          <div class="inline-form" id="new-user-form" style="display:none">
-            <input id="nu-username" placeholder="Username">
-            <input id="nu-password" type="password" placeholder="Password">
-            <select id="nu-role">
-  <option value="read_only">Read only</option>
-  <option value="read_write">Read/Write</option>
-  <option value="org_admin">Org Admin</option>
-</select>
-            <button class="btn-sm active" onclick="createUser()">Add user</button>
-            <button class="btn-sm" onclick="document.getElementById('new-user-form').style.display='none'">Cancel</button>
+
+          <!-- Tab Switcher -->
+          <div class="um-tabs">
+            <button class="um-tab active" id="um-tab-users" onclick="switchTeamTab('users')">👥 Users</button>
+            <button class="um-tab" id="um-tab-folders" onclick="switchTeamTab('folders')">🔐 Folder Access</button>
           </div>
-          <button class="btn-sm active" style="margin-bottom:14px"
-            onclick="document.getElementById('new-user-form').style.display='flex'">
-            ＋ New team member
-          </button>
-          <div id="user-list"></div>
+
+          <!-- Users Tab Content -->
+          <div id="team-tab-users">
+            <!-- Stats Cards -->
+            <div class="um-stats" id="um-stats"></div>
+
+            <!-- Search & Filter -->
+            <div class="um-toolbar">
+              <div class="um-search">
+                <span class="um-search-icon">🔍</span>
+                <input id="um-search" placeholder="Search users..." oninput="filterUsers()">
+              </div>
+              <select id="um-role-filter" class="um-filter" onchange="filterUsers()">
+                <option value="">All Roles</option>
+                <option value="org_admin">Org Admin</option>
+                <option value="read_write">Read/Write</option>
+                <option value="read_only">Read Only</option>
+              </select>
+              <button class="btn-sm active" onclick="showAddUserModal()">＋ Add User</button>
+            </div>
+
+            <!-- User Table -->
+            <div class="um-table-wrap">
+              <table class="um-table">
+                <thead>
+                  <tr>
+                    <th>User</th>
+                    <th>Role</th>
+                    <th>Joined</th>
+                    <th>Activity</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="um-user-tbody"></tbody>
+              </table>
+              <div class="empty-state" id="um-empty" style="display:none">
+                <div class="empty-icon">👥</div>
+                No users found.
+              </div>
+            </div>
+          </div>
+
+          <!-- Folder Access Tab Content -->
+          <div id="team-tab-folders" style="display:none">
+            <div class="fa-info-bar">
+              <span class="fa-info-icon">ℹ️</span>
+              <span>Manage which users can access specific folders. Users without folder-specific permissions inherit their org-wide role.</span>
+            </div>
+            <div id="fa-folder-list"></div>
+            <div class="empty-state" id="fa-empty" style="display:none">
+              <div class="empty-icon">📁</div>
+              No folders created yet.
+            </div>
+          </div>
         </div>
       </div>
 
@@ -237,6 +282,224 @@
 <!-- toast -->
 <div class="toast" id="toast"></div>
 
-<script src="app.js?v=2"></script>
+<!-- ── SHARE MODAL ───────────────────────────────────────────────────── -->
+<div class="modal-backdrop" id="share-modal" style="display:none">
+  <div class="modal">
+    <h3>🔗 Share File</h3>
+    <div id="share-link-area" style="margin-bottom:12px">
+      <div class="field">
+        <label>Link</label>
+        <div class="share-link-row">
+          <input id="share-link-input" readonly style="flex:1;font-family:var(--mono);font-size:12px">
+          <button class="btn-sm active" onclick="copyShareLink()">Copy</button>
+        </div>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">
+        Expires: <span id="share-expires"></span> · Downloads: <span id="share-downloads">0</span>
+      </div>
+      <div id="share-existing-links"></div>
+    </div>
+    <div class="field">
+      <label>Expires in (days)</label>
+      <input id="share-expiry" type="number" value="7" min="1" max="365">
+    </div>
+    <div class="field">
+      <label>Password (optional)</label>
+      <input id="share-password" type="password" placeholder="leave blank for no password">
+    </div>
+    <div class="modal-actions">
+      <button class="btn-sm" onclick="closeModal('share-modal')">Close</button>
+      <button class="btn-sm active" onclick="createShareLink()">Generate Link</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── EMAIL MODAL ───────────────────────────────────────────────────── -->
+<div class="modal-backdrop" id="email-modal" style="display:none">
+  <div class="modal">
+    <h3>📧 Send via Email</h3>
+    <div class="field">
+      <label>Recipients (comma-separated)</label>
+      <input id="email-recipients" placeholder="alice@example.com, bob@example.com">
+    </div>
+    <div class="field">
+      <label>Message (optional)</label>
+      <textarea id="email-message" rows="3" placeholder="Here is the file you requested..." style="width:100%;background:rgba(0,0,0,.3);border:1px solid var(--glass-border);border-radius:var(--r);color:var(--text);font-size:13px;padding:8px 12px;resize:vertical;font-family:var(--sans);outline:none"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-sm" onclick="closeModal('email-modal')">Cancel</button>
+      <button class="btn-sm active" onclick="sendEmail()">Send</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── PREVIEW MODAL ─────────────────────────────────────────────────── -->
+<div class="modal-backdrop" id="preview-modal" style="display:none">
+  <div class="modal" style="max-width:900px;width:95%;max-height:90vh;display:flex;flex-direction:column">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <h3 style="flex:1" id="preview-title">Preview</h3>
+      <button class="btn-sm" onclick="downloadPreviewFile()">↓ Download</button>
+      <button class="btn-sm" onclick="closeModal('preview-modal')">✕ Close</button>
+    </div>
+    <div id="preview-content" style="flex:1;overflow:auto;min-height:200px;border:1px solid var(--glass-border);border-radius:var(--r);background:rgba(0,0,0,.3)"></div>
+  </div>
+</div>
+
+<!-- ── EDIT MODAL ────────────────────────────────────────────────────── -->
+<div class="modal-backdrop" id="edit-modal" style="display:none">
+  <div class="modal" style="max-width:900px;width:95%;max-height:90vh;display:flex;flex-direction:column">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <h3 style="flex:1" id="edit-title">Edit Document</h3>
+      <button class="btn-sm active" onclick="document.getElementById('edit-rich-wrap').style.display !== 'none' ? saveEditRich() : saveEdit()">Save as new version</button>
+      <button class="btn-sm" onclick="closeModal('edit-modal')">✕ Close</button>
+    </div>
+    <div id="edit-content" style="flex:1;overflow:auto;min-height:300px">
+      <div id="edit-rich-wrap" style="display:none">
+        <div id="edit-rich-toolbar" class="rich-toolbar" style="display:none">
+          <button class="btn-sm" onclick="richCmd('bold')" title="Bold"><b>B</b></button>
+          <button class="btn-sm" onclick="richCmd('italic')" title="Italic"><i>I</i></button>
+          <button class="btn-sm" onclick="richCmd('underline')" title="Underline"><u>U</u></button>
+          <button class="btn-sm" onclick="richCmd('strikeThrough')" title="Strikethrough"><s>S</s></button>
+          <span style="width:1px;height:20px;background:var(--glass-border);margin:0 4px"></span>
+          <button class="btn-sm" onclick="richCmd('insertUnorderedList')" title="Bullet list">• List</button>
+          <button class="btn-sm" onclick="richCmd('insertOrderedList')" title="Numbered list">1. List</button>
+          <span style="width:1px;height:20px;background:var(--glass-border);margin:0 4px"></span>
+          <button class="btn-sm" onclick="richCmd('formatBlock','h2')" title="Heading">H2</button>
+          <button class="btn-sm" onclick="richCmd('formatBlock','h3')" title="Subheading">H3</button>
+          <button class="btn-sm" onclick="richCmd('formatBlock','p')" title="Paragraph">¶</button>
+        </div>
+        <div id="edit-rich-content" style="padding:16px">
+          <div id="edit-rich-editor" contenteditable="true" style="min-height:300px;padding:16px;background:rgba(255,255,255,.95);color:#1a1a1a;border-radius:var(--r);font-family:'IBM Plex Sans',sans-serif;font-size:14px;line-height:1.7;outline:none"></div>
+        </div>
+      </div>
+      <div id="edit-textarea-wrap" style="display:none;height:100%">
+        <textarea id="edit-textarea" style="width:100%;height:400px;background:rgba(0,0,0,.3);border:1px solid var(--glass-border);border-radius:var(--r);color:var(--text);font-family:var(--mono);font-size:13px;padding:12px;resize:none;outline:none;box-sizing:border-box"></textarea>
+      </div>
+      <div id="edit-binary-notice" style="display:none;text-align:center;padding:40px;color:var(--muted)">
+        <div style="font-size:48px;margin-bottom:16px">📄</div>
+        <div style="font-size:16px;font-weight:600;margin-bottom:8px">Binary file — cannot edit in browser</div>
+        <div style="font-size:13px;margin-bottom:16px">Download this file, edit it locally, then upload the modified version.</div>
+        <button class="btn-sm active" onclick="downloadEditFile()">↓ Download to edit</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── ADD USER MODAL ─────────────────────────────────────────────────── -->
+<div class="modal-backdrop" id="add-user-modal" style="display:none">
+  <div class="modal">
+    <h3>＋ Add New User</h3>
+    <div class="field">
+      <label>Username</label>
+      <input id="au-username" placeholder="e.g. john_doe">
+    </div>
+    <div class="field">
+      <label>Password</label>
+      <input id="au-password" type="password" placeholder="min 6 characters">
+    </div>
+    <div class="field">
+      <label>Role</label>
+      <select id="au-role" class="um-select">
+        <option value="read_only">Read Only — can view and download files</option>
+        <option value="read_write" selected>Read/Write — can upload, edit, download</option>
+        <option value="org_admin">Org Admin — full access including user management</option>
+      </select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-sm" onclick="closeModal('add-user-modal')">Cancel</button>
+      <button class="btn-sm active" onclick="addUser()">Create User</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── EDIT USER MODAL ────────────────────────────────────────────────── -->
+<div class="modal-backdrop" id="edit-user-modal" style="display:none">
+  <div class="modal" style="max-width:520px">
+    <h3>Edit User — <span id="eu-username-display"></span></h3>
+    <div class="field">
+      <label>Username</label>
+      <input id="eu-username" placeholder="Username">
+    </div>
+    <div class="field">
+      <label>New Password (leave blank to keep current)</label>
+      <input id="eu-password" type="password" placeholder="Enter new password">
+    </div>
+    <div class="field">
+      <label>Role</label>
+      <select id="eu-role" class="um-select">
+        <option value="read_only">Read Only</option>
+        <option value="read_write">Read/Write</option>
+        <option value="org_admin">Org Admin</option>
+      </select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-sm" onclick="closeModal('edit-user-modal')">Cancel</button>
+      <button class="btn-sm active" onclick="saveUserEdit()">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── USER ACTIVITY MODAL ────────────────────────────────────────────── -->
+<div class="modal-backdrop" id="user-activity-modal" style="display:none">
+  <div class="modal" style="max-width:700px;width:95%;max-height:85vh;display:flex;flex-direction:column">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <h3 style="flex:1">Activity — <span id="ua-username-display"></span></h3>
+      <button class="btn-sm" onclick="closeModal('user-activity-modal')">✕ Close</button>
+    </div>
+    <div id="user-activity-list" style="flex:1;overflow:auto"></div>
+  </div>
+</div>
+
+<!-- ── USER PERMISSIONS MODAL ─────────────────────────────────────────── -->
+<div class="modal-backdrop" id="user-perms-modal" style="display:none">
+  <div class="modal" style="max-width:600px;width:95%;max-height:85vh;display:flex;flex-direction:column">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <h3 style="flex:1">Permissions — <span id="up-username-display"></span></h3>
+      <button class="btn-sm" onclick="closeModal('user-perms-modal')">✕ Close</button>
+    </div>
+    <div class="um-perm-form">
+      <select id="up-folder" class="um-select" style="flex:1">
+        <option value="">Root (all folders)</option>
+      </select>
+      <select id="up-level" class="um-select">
+        <option value="read_only">Read Only</option>
+        <option value="read_write">Read/Write</option>
+        <option value="org_admin">Org Admin</option>
+      </select>
+      <button class="btn-sm active" onclick="addUserPermission()">Add</button>
+    </div>
+    <div id="user-perms-list" style="flex:1;overflow:auto"></div>
+  </div>
+</div>
+
+<!-- ── GRANT FOLDER ACCESS MODAL ──────────────────────────────────────── -->
+<div class="modal-backdrop" id="grant-access-modal" style="display:none">
+  <div class="modal">
+    <h3>🔐 Grant Access — <span id="ga-folder-name"></span></h3>
+    <div class="field">
+      <label>Select User</label>
+      <select id="ga-user" class="um-select" style="width:100%">
+        <option value="">Choose a user…</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Permission Level</label>
+      <select id="ga-level" class="um-select" style="width:100%">
+        <option value="read_only">Read Only — can view and download</option>
+        <option value="read_write">Read/Write — can upload, edit, download</option>
+        <option value="org_admin">Org Admin — full access to this folder</option>
+      </select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-sm" onclick="closeModal('grant-access-modal')">Cancel</button>
+      <button class="btn-sm active" onclick="grantFolderAccess()">Grant Access</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.8.0/mammoth.browser.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="app.js?v=4"></script>
 </body>
 </html>

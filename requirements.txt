@@ -1,6 +1,10 @@
 flask
-supabase-py
+supabase
 cryptography
 python-dotenv
 telethon
 requests               # kept only for backward compat during migration
+Pygments              # syntax highlighting for text preview
+python-docx           # Word document handling
+openpyxl              # Excel spreadsheet handling
+python-pptx           # PowerPoint presentation handling

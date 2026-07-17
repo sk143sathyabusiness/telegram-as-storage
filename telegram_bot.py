@@ -20,6 +20,7 @@ from typing import List, Dict, Optional
 
 from telethon import TelegramClient
 from telethon.tl.types import Message
+from telethon.errors import ChatIdInvalidError
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -56,7 +57,43 @@ def _split_bytes(data: bytes) -> List[bytes]:
     return [data[i:i + CHUNK_SIZE_BYTES] for i in range(0, len(data), CHUNK_SIZE_BYTES)]
 
 
-async def _upload_single_chunk(client, channel_id, chunk_bytes, chunk_index, total_chunks, remote_name):
+async def _resolve_entity(client, channel_id):
+    """Resolve a numeric chat/channel ID to a Telethon entity object.
+
+    Handles common ID format issues:
+      - Basic groups:  negative IDs like -123456789
+      - Supergroups:   positive IDs like 123456789
+      - With prefix:   -100 prefixed like -1001234567890
+      - Wrong sign:    stored as -4358806946 but actual channel is 4358806946
+    """
+    # 1. Try the ID as-is
+    try:
+        return await client.get_entity(channel_id)
+    except (ChatIdInvalidError, ValueError):
+        pass
+
+    # 2. If negative, try the positive version (channel stored with wrong sign)
+    if isinstance(channel_id, int) and channel_id < 0:
+        try:
+            return await client.get_entity(abs(channel_id))
+        except (ChatIdInvalidError, ValueError):
+            pass
+
+        # 3. Try the -100 prefixed format (supergroup URL format)
+        try:
+            return await client.get_entity(int(f"-100{abs(channel_id)}"))
+        except (ChatIdInvalidError, ValueError):
+            pass
+
+    raise ChatIdInvalidError(
+        request=None,
+        message=f"Cannot resolve chat ID {channel_id}. "
+                "Make sure the user account has joined the channel/supergroup, "
+                "and the ID is correct."
+    )
+
+
+async def _upload_single_chunk(client, entity, chunk_bytes, chunk_index, total_chunks, remote_name):
     """Upload a single chunk to Telegram. Returns message ID."""
     buf = io.BytesIO(chunk_bytes)
     if total_chunks > 1:
@@ -64,9 +101,10 @@ async def _upload_single_chunk(client, channel_id, chunk_bytes, chunk_index, tot
     else:
         buf.name = remote_name
     msg: Message = await client.send_file(
-        channel_id,
+        entity,
         buf,
         caption=buf.name,
+        force_document=True,
     )
     buf.close()
     return msg.id
@@ -104,11 +142,12 @@ async def _upload_chunks_async(
         )
 
     try:
+        entity = await _resolve_entity(client, channel_id)
         chunks = _split_bytes(file_bytes)
         total_chunks = len(chunks)
 
         if total_chunks == 1:
-            msg_id = await _upload_single_chunk(client, channel_id, chunks[0], 0, 1, remote_name)
+            msg_id = await _upload_single_chunk(client, entity, chunks[0], 0, 1, remote_name)
             if progress_callback:
                 progress_callback(1, 1)
             return [msg_id]
@@ -117,7 +156,7 @@ async def _upload_chunks_async(
             # Sequential upload — safest, lowest memory pressure
             message_ids = []
             for i, chunk in enumerate(chunks):
-                msg_id = await _upload_single_chunk(client, channel_id, chunk, i, total_chunks, remote_name)
+                msg_id = await _upload_single_chunk(client, entity, chunk, i, total_chunks, remote_name)
                 message_ids.append(msg_id)
                 if progress_callback:
                     progress_callback(i + 1, total_chunks)
@@ -130,7 +169,7 @@ async def _upload_chunks_async(
 
             async def _upload_with_sem(idx, chunk):
                 async with sem:
-                    msg_id = await _upload_single_chunk(client, channel_id, chunk, idx, total_chunks, remote_name)
+                    msg_id = await _upload_single_chunk(client, entity, chunk, idx, total_chunks, remote_name)
                     if progress_callback:
                         progress_callback(idx + 1, total_chunks)
                     return msg_id
@@ -162,6 +201,7 @@ async def _upload_chunks_streaming_async(
     Upload from a readable stream, chunking into ~CHUNK_SIZE_BYTES pieces.
     Peak memory stays near CHUNK_SIZE_BYTES instead of the full file size.
     """
+    print(f"[TG] Connecting to Telegram...")
     client = _make_client()
     await client.connect()
     if not await client.is_user_authorized():
@@ -170,7 +210,10 @@ async def _upload_chunks_streaming_async(
             "Telethon session not authorized. Run the one-time login "
             "flow to generate session_name.session before using this module."
         )
+    print(f"[TG] Connected. Resolving entity for chat_id={channel_id}...")
     try:
+        entity = await _resolve_entity(client, channel_id)
+        print(f"[TG] Entity resolved: {entity.title if hasattr(entity, 'title') else entity}")
         message_ids = []
         chunk_index = 0
         while True:
@@ -187,8 +230,10 @@ async def _upload_chunks_streaming_async(
                 except Exception:
                     pass
             total_chunks_est = (total_known // CHUNK_SIZE_BYTES + 1) if total_known else chunk_index + 2
-            msg_id = await _upload_single_chunk(client, channel_id, chunk, chunk_index, total_chunks_est, remote_name)
+            print(f"[TG] Uploading chunk {chunk_index + 1}/{total_chunks_est} ({len(chunk)} bytes)...")
+            msg_id = await _upload_single_chunk(client, entity, chunk, chunk_index, total_chunks_est, remote_name)
             message_ids.append(msg_id)
+            print(f"[TG] Chunk {chunk_index + 1} uploaded — message_id={msg_id}")
             chunk_index += 1
             if progress_callback:
                 if total_known:
@@ -196,6 +241,7 @@ async def _upload_chunks_streaming_async(
                 else:
                     progress_callback(chunk_index, total_chunks_est)
             del chunk
+        print(f"[TG] Upload complete. {len(message_ids)} chunk(s) sent.")
         return message_ids
     finally:
         await client.disconnect()
@@ -230,16 +276,20 @@ async def _download_chunks_async(
         raise RuntimeError("Telethon session not authorized.")
 
     try:
+        entity = await _resolve_entity(client, channel_id)
+        print(f"[TG] Downloading {len(message_ids)} chunk(s)...")
         assembled = io.BytesIO()
         for i, msg_id in enumerate(message_ids):
-            msg = await client.get_messages(channel_id, ids=msg_id)
+            msg = await client.get_messages(entity, ids=msg_id)
             chunk_buf = io.BytesIO()
             await client.download_media(msg, file=chunk_buf, progress_callback=progress_callback)
             assembled.write(chunk_buf.getvalue())
+            print(f"[TG] Chunk {i + 1}/{len(message_ids)} downloaded")
             chunk_buf.close()
 
         data = assembled.getvalue()
         assembled.close()
+        print(f"[TG] Download complete. Total {len(data)} bytes.")
         return data
     finally:
         await client.disconnect()
@@ -262,18 +312,25 @@ def download_chunks(
 
 async def _download_chunks_streaming_async(channel_id, message_ids, progress_callback=None):
     """Async generator — yields each chunk as bytes, in order."""
+    print(f"[TG] Connecting to Telegram for download...")
     client = _make_client()
     await client.connect()
     if not await client.is_user_authorized():
         await client.disconnect()
         raise RuntimeError("Telethon session not authorized.")
     try:
+        entity = await _resolve_entity(client, channel_id)
+        print(f"[TG] Downloading {len(message_ids)} chunk(s) from channel...")
         for i, msg_id in enumerate(message_ids):
-            msg = await client.get_messages(channel_id, ids=msg_id)
+            print(f"[TG] Downloading chunk {i + 1}/{len(message_ids)} (msg_id={msg_id})...")
+            msg = await client.get_messages(entity, ids=msg_id)
             chunk_buf = io.BytesIO()
             await client.download_media(msg, file=chunk_buf, progress_callback=progress_callback)
-            yield chunk_buf.getvalue()
+            data = chunk_buf.getvalue()
+            print(f"[TG] Chunk {i + 1} downloaded ({len(data)} bytes)")
+            yield data
             chunk_buf.close()
+        print(f"[TG] Download complete.")
     finally:
         await client.disconnect()
 
@@ -305,7 +362,8 @@ async def delete_file(channel_id: int, message_ids: List[int]) -> None:
     client = _make_client()
     await client.connect()
     try:
-        await client.delete_messages(channel_id, message_ids)
+        entity = await _resolve_entity(client, channel_id)
+        await client.delete_messages(entity, message_ids)
     finally:
         await client.disconnect()
 
@@ -329,7 +387,9 @@ async def backup_essential_folder(channel_id: int, backup_channel_id: int, messa
     client = _make_client()
     await client.connect()
     try:
-        forwarded = await client.forward_messages(backup_channel_id, message_ids, channel_id)
+        entity = await _resolve_entity(client, channel_id)
+        backup_entity = await _resolve_entity(client, backup_channel_id)
+        forwarded = await client.forward_messages(backup_entity, message_ids, entity)
         if isinstance(forwarded, Message):
             forwarded = [forwarded]
         return [m.id for m in forwarded]

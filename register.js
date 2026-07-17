@@ -38,6 +38,11 @@ function validate(step) {
       return 'Password must be at least 8 characters.';
     if (pw !== document.getElementById('confirm-password').value)
       return 'Passwords do not match.';
+    const chatId = document.getElementById('chat-id').value.trim();
+    if (!chatId)
+      return 'Telegram Channel ID is required for file storage.';
+    if (!/^-?\d+$/.test(chatId))
+      return 'Telegram Channel ID must be a numeric ID (e.g. -1001234567890).';
   }
   if (step === 2) {
     if (!document.getElementById('contact-name').value.trim())

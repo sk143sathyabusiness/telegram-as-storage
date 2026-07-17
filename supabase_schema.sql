@@ -65,7 +65,7 @@ CREATE TABLE permissions (
     permission_level TEXT NOT NULL DEFAULT 'read_only'
         CHECK (permission_level IN ('read_only', 'read_write', 'org_admin')),
     created_at TIMESTAMPTZ DEFAULT now(),
-    UNIQUE (user_id, folder_id)
+    UNIQUE NULLS NOT DISTINCT (user_id, folder_id)
 );
 
 CREATE TABLE audit_logs (
@@ -77,6 +77,29 @@ CREATE TABLE audit_logs (
     target_type TEXT,
     target_id TEXT,
     details JSONB,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Shared links (public shareable file links)
+CREATE TABLE shared_links (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    token TEXT NOT NULL UNIQUE DEFAULT encode(gen_random_bytes(16), 'hex'),
+    created_by UUID REFERENCES users(id),
+    expires_at TIMESTAMPTZ,
+    password_hash TEXT,
+    download_count INTEGER DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Backups — metadata snapshots stored as JSON on Telegram channel
+CREATE TABLE backups (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    size_bytes INTEGER,
+    message_id INTEGER NOT NULL,
+    created_by UUID REFERENCES users(id),
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
@@ -110,50 +133,85 @@ ALTER TABLE files ENABLE ROW LEVEL SECURITY;
 ALTER TABLE file_versions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE permissions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE shared_links ENABLE ROW LEVEL SECURITY;
+ALTER TABLE backups ENABLE ROW LEVEL SECURITY;
 
--- Org isolation: users see only their org's data
-CREATE POLICY org_isolation ON organizations
+-- Performance indexes (PostgreSQL does NOT auto-index FK columns)
+CREATE INDEX IF NOT EXISTS idx_files_org_id ON files(org_id);
+CREATE INDEX IF NOT EXISTS idx_files_folder_id ON files(folder_id);
+CREATE INDEX IF NOT EXISTS idx_file_versions_file_id ON file_versions(file_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_org_created ON audit_logs(org_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_actor ON audit_logs(actor_id);
+CREATE INDEX IF NOT EXISTS idx_permissions_org_user ON permissions(org_id, user_id);
+CREATE INDEX IF NOT EXISTS idx_permissions_folder ON permissions(folder_id);
+CREATE INDEX IF NOT EXISTS idx_backups_org_id ON backups(org_id);
+CREATE INDEX IF NOT EXISTS idx_shared_links_token ON shared_links(token);
+
+-- Org isolation policies (unique names per table, master_admin bypass on all)
+
+CREATE POLICY orgs_org_isolation ON organizations
     FOR ALL USING (
         id IN (SELECT org_id FROM users WHERE id = current_setting('app.user_id')::UUID)
         OR current_setting('app.user_role')::text = 'master_admin'
     );
 
-CREATE POLICY org_isolation ON users
+CREATE POLICY users_select_all ON users
     FOR SELECT USING (true);
 
-CREATE POLICY org_isolation ON users
+CREATE POLICY users_org_isolation ON users
     FOR ALL USING (
         org_id IN (SELECT org_id FROM users WHERE id = current_setting('app.user_id')::UUID)
         OR current_setting('app.user_role')::text = 'master_admin'
     );
 
-CREATE POLICY org_isolation ON folders
+CREATE POLICY folders_org_isolation ON folders
     FOR ALL USING (
         org_id IN (SELECT org_id FROM users WHERE id = current_setting('app.user_id')::UUID)
+        OR current_setting('app.user_role')::text = 'master_admin'
     );
 
-CREATE POLICY org_isolation ON files
+CREATE POLICY files_org_isolation ON files
     FOR ALL USING (
         org_id IN (SELECT org_id FROM users WHERE id = current_setting('app.user_id')::UUID)
+        OR current_setting('app.user_role')::text = 'master_admin'
     );
 
-CREATE POLICY org_isolation ON file_versions
+CREATE POLICY file_versions_org_isolation ON file_versions
     FOR ALL USING (
         file_id IN (
             SELECT f.id FROM files f
             JOIN users u ON f.org_id = u.org_id
             WHERE u.id = current_setting('app.user_id')::UUID
         )
+        OR current_setting('app.user_role')::text = 'master_admin'
     );
 
-CREATE POLICY org_isolation ON permissions
+CREATE POLICY permissions_org_isolation ON permissions
     FOR ALL USING (
         org_id IN (SELECT org_id FROM users WHERE id = current_setting('app.user_id')::UUID)
+        OR current_setting('app.user_role')::text = 'master_admin'
     );
 
-CREATE POLICY org_isolation ON audit_logs
+CREATE POLICY audit_logs_org_isolation ON audit_logs
     FOR ALL USING (
         org_id IN (SELECT org_id FROM users WHERE id = current_setting('app.user_id')::UUID)
+        OR current_setting('app.user_role')::text = 'master_admin'
+    );
+
+CREATE POLICY shared_links_org_isolation ON shared_links
+    FOR ALL USING (
+        file_id IN (
+            SELECT f.id FROM files f
+            JOIN users u ON f.org_id = u.org_id
+            WHERE u.id = current_setting('app.user_id')::UUID
+        )
+        OR current_setting('app.user_role')::text = 'master_admin'
+    );
+
+CREATE POLICY backups_org_isolation ON backups
+    FOR ALL USING (
+        org_id IN (SELECT org_id FROM users WHERE id = current_setting('app.user_id')::UUID)
+        OR current_setting('app.user_role')::text = 'master_admin'
     );
 
 -- Helper to set user context for RLS
