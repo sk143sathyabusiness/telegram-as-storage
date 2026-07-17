@@ -15,7 +15,10 @@ from supabase import create_client, Client
 
 load_dotenv()
 
-import telegram_bot
+try:
+    import telegram_bot
+except Exception:
+    telegram_bot = None
 
 app = Flask(__name__)
 
@@ -61,12 +64,16 @@ def get_supabase() -> Client:
 
 def check_supabase():
     if not SUPABASE_URL or not SUPABASE_KEY:
-        print("ERROR: SUPABASE_URL and SUPABASE_SERVICE_KEY must be set in .env")
-        raise SystemExit(1)
+        if __name__ == "__main__":
+            print("ERROR: SUPABASE_URL and SUPABASE_SERVICE_KEY must be set in .env")
+            raise SystemExit(1)
 
 def set_rls_context(user_id, role):
     sup = get_supabase()
     sup.rpc("set_app_context", {"uid": user_id, "urole": role}).execute()
+
+def _tg_configured():
+    return telegram_bot is not None and _tg_configured()
 
 # ── HELPERS ────────────────────────────────────────────────────────────────
 
@@ -548,7 +555,7 @@ def _store_file_blob(f, org_id):
     close to CHUNK_SIZE_BYTES (~1.9 GB) rather than the full file size.
     """
     print(f"[UPLOAD] _store_file_blob called: org_id={org_id}, filename={f.filename}")
-    if not telegram_bot.is_configured():
+    if not _tg_configured():
         raise RuntimeError("Telegram not configured — check TG_API_ID and TG_API_HASH in .env")
     sup = get_supabase()
     org = sup.table("organizations").select("telegram_chat_id").eq("id", org_id).maybe_single().execute()
@@ -570,7 +577,7 @@ def _store_file_blob(f, org_id):
 
 def _load_file_blob(org_id, message_ids):
     """Download encrypted bytes from Telegram chunks."""
-    if not telegram_bot.is_configured():
+    if not _tg_configured():
         raise RuntimeError("Telegram not configured")
     sup = get_supabase()
     org = sup.table("organizations").select("telegram_chat_id").eq("id", org_id).maybe_single().execute()
@@ -676,7 +683,7 @@ def api_files_download(file_id):
     message_ids = _parse_message_ids(ver["message_ids"])
     size_bytes = ver["size_bytes"]
     print(f"[DOWNLOAD] file={fdata['name']}, version=v{ver['version_number']}, size={size_bytes}, chunks={len(message_ids)}")
-    if not telegram_bot.is_configured():
+    if not _tg_configured():
         return jsonify({"error": "Telegram not configured"}), 500
     sup2 = get_supabase()
     org = sup2.table("organizations").select("telegram_chat_id").eq("id", fdata["org_id"]).maybe_single().execute()
@@ -788,7 +795,7 @@ def api_trash_hard_delete(file_id):
     sup = get_supabase()
     f = sup.table("files").select("name, folder_id").eq("id", file_id).maybe_single().execute()
     versions = sup.table("file_versions").select("message_ids").eq("file_id", file_id).execute().data
-    if telegram_bot.is_configured() and versions:
+    if _tg_configured() and versions:
         org = sup.table("organizations").select("telegram_chat_id").eq("id", user["org_id"]).maybe_single().execute()
         chat_id = int(org.data["telegram_chat_id"]) if org and org.data and org.data.get("telegram_chat_id") else None
         if chat_id:
@@ -1163,7 +1170,7 @@ def api_shared_download(token):
     ver = ver_result.data[0]
     message_ids = _parse_message_ids(ver["message_ids"])
     size_bytes = ver["size_bytes"]
-    if not telegram_bot.is_configured():
+    if not _tg_configured():
         return jsonify({"error": "Telegram not configured"}), 500
     org = sup.table("organizations").select("telegram_chat_id").eq("id", org_id).maybe_single().execute()
     chat_id = int(org.data["telegram_chat_id"]) if org and org.data and org.data.get("telegram_chat_id") else None
@@ -1215,7 +1222,7 @@ def api_shared_preview(token):
     ver = ver_result.data[0]
     message_ids = _parse_message_ids(ver["message_ids"])
     size_bytes = ver["size_bytes"]
-    if not telegram_bot.is_configured():
+    if not _tg_configured():
         return jsonify({"error": "Telegram not configured"}), 500
     org = sup.table("organizations").select("telegram_chat_id").eq("id", org_id).maybe_single().execute()
     chat_id = int(org.data["telegram_chat_id"]) if org and org.data and org.data.get("telegram_chat_id") else None
@@ -1322,7 +1329,7 @@ def api_files_preview(file_id):
     ver = ver_result.data[0]
     message_ids = _parse_message_ids(ver["message_ids"])
     size_bytes = ver["size_bytes"]
-    if not telegram_bot.is_configured():
+    if not _tg_configured():
         return jsonify({"error": "Telegram not configured"}), 500
     org = sup.table("organizations").select("telegram_chat_id").eq("id", fdata["org_id"]).maybe_single().execute()
     chat_id = int(org.data["telegram_chat_id"]) if org and org.data and org.data.get("telegram_chat_id") else None
@@ -1549,7 +1556,7 @@ CREATE INDEX IF NOT EXISTS idx_backups_org_id ON backups(org_id);"""
         print(sql)
 
 check_supabase()
-_ensure_backups_table()
 
 if __name__ == "__main__":
+    _ensure_backups_table()
     app.run(debug=True, port=5000)
