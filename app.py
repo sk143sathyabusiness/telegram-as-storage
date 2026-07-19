@@ -25,6 +25,45 @@ app = Flask(__name__)
 # Support large file uploads (default 10GB)
 app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get('MAX_UPLOAD_SIZE', 10 * 1024 * 1024 * 1024))
 
+# Secure session cookies: never expose to JS, send over HTTPS only in prod,
+# and protect against CSRF with SameSite=Lax.
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_SECURE'] = os.environ.get('FLASK_ENV', 'development') != 'development'
+
+@app.after_request
+def _security_headers(resp):
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("Referrer-Policy", "no-referrer")
+    resp.headers.setdefault("Content-Security-Policy",
+        "default-src 'self'; "
+        "img-src 'self' data: blob:; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "script-src 'self' https://cdnjs.cloudflare.com; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'")
+    # Drop the verbose Flask Server header.
+    resp.headers.setdefault("Server", "TeamVault")
+    return resp
+
+@app.errorhandler(404)
+def _not_found(e):
+    # Avoid leaking internal static paths.
+    return jsonify({"error": "not found"}), 404
+
+@app.errorhandler(413)
+def _too_large(e):
+    limit = request.max_content_length
+    return jsonify({"error": f"Upload too large. Maximum allowed size is {fmt_size(limit) if limit else 'the configured limit'}."}), 413
+
+@app.errorhandler(500)
+def _server_error(e):
+    return jsonify({"error": "Internal server error. Please try again later."}), 500
+
 class UUIDConverter(BaseConverter):
     def to_python(self, value):
         return uuid_lib.UUID(value)
@@ -156,6 +195,55 @@ def _parse_message_ids(raw):
         return json.loads(raw)
     return []
 
+# ── SHARE LINK PASSWORD HASHING ────────────────────────────────────────────
+# Shared-link passwords are hashed with PBKDF2 (salted) instead of plain SHA-256
+# so a leak of the metadata table does not reveal usable password hashes.
+_SHARE_PW_SALT = b"teamvault-share-v1"
+def hash_share_password(password: str) -> str:
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), _SHARE_PW_SALT, 100_000)
+    return "pbkdf2$" + dk.hex()
+
+def verify_share_password(password: str, stored: str) -> bool:
+    if not stored or not stored.startswith("pbkdf2$"):
+        # Legacy plain-SHA256 fallback (no salt) for old rows.
+        return stored == hashlib.sha256(password.encode()).hexdigest()
+    expected = stored.split("$", 1)[1]
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), _SHARE_PW_SALT, 100_000)
+    return secrets.compare_digest(dk.hex(), expected)
+
+# ── LOGIN BRUTE-FORCE PROTECTION ─────────────────────────────────────────────
+# In-memory rate limiter: per-IP + per-username, with exponential lockout.
+_LOGIN_ATTEMPTS = {}        # key -> {"count": int, "until": float}
+_LOGIN_WINDOW = 60          # seconds
+_LOGIN_MAX = 5              # attempts before lockout
+_LOGIN_LOCKOUT = 300        # seconds of lockout
+
+def _login_rate_limit_allowed(key: str) -> bool:
+    now = datetime.utcnow().timestamp()
+    rec = _LOGIN_ATTEMPTS.get(key)
+    if not rec:
+        return True
+    if now < rec["until"]:
+        return False
+    if now - rec.get("first", now) > _LOGIN_WINDOW:
+        # window expired, reset
+        _LOGIN_ATTEMPTS.pop(key, None)
+        return True
+    return rec["count"] < _LOGIN_MAX
+
+def _login_rate_limit_register_failure(key: str):
+    now = datetime.utcnow().timestamp()
+    rec = _LOGIN_ATTEMPTS.get(key)
+    if not rec or now - rec.get("first", now) > _LOGIN_WINDOW:
+        _LOGIN_ATTEMPTS[key] = {"count": 1, "first": now, "until": 0}
+        return
+    rec["count"] += 1
+    if rec["count"] >= _LOGIN_MAX:
+        rec["until"] = now + _LOGIN_LOCKOUT
+
+def _login_rate_limit_register_success(key: str):
+    _LOGIN_ATTEMPTS.pop(key, None)
+
 # ── STATIC / PAGES ────────────────────────────────────────────────────────
 
 @app.route("/")
@@ -195,13 +283,29 @@ def api_login():
     password = data.get("password", "")
     if not username or not password:
         return jsonify({"error": "Username and password required"}), 400
+
+    # Brute-force protection (keyed by IP + username).
+    client_ip = request.headers.get("X-Forwarded-For", request.remote_addr or "unknown").split(",")[0].strip()
+    rl_key = f"{client_ip}|{username}"
+    if not _login_rate_limit_allowed(rl_key):
+        return jsonify({"error": "Too many attempts. Please try again later."}), 429
+
     sup = get_supabase()
     result = sup.table("users").select("*").eq("username", username).execute()
     if not result.data:
+        _login_rate_limit_register_failure(rl_key)
         return jsonify({"error": "Invalid credentials"}), 401
     user = result.data[0]
     if not check_password_hash(user["password_hash"], password):
+        _login_rate_limit_register_failure(rl_key)
         return jsonify({"error": "Invalid credentials"}), 401
+    _login_rate_limit_register_success(rl_key)
+
+    # Block logins for orgs that are not active.
+    org = sup.table("organizations").select("status").eq("id", user["org_id"]).maybe_single().execute()
+    if not org or not org.data or org.data["status"] != "active":
+        return jsonify({"error": "Account is not active. Contact an administrator."}), 403
+
     session["user_id"] = user["id"]
     session["org_id"] = user["org_id"]
     session["role"] = user["role"]
@@ -626,7 +730,7 @@ def api_files_upload():
         message_ids, size_bytes = _store_file_blob(f, user["org_id"])
     except Exception as e:
         import traceback; traceback.print_exc()
-        return jsonify({"error": f"Storage failed: {str(e)[:200]}"}), 500
+        return jsonify({"error": "Storage failed. Please try again or contact an administrator."}), 500
     print(f"[UPLOAD] Stored to Telegram. message_ids={message_ids}, size={size_bytes}")
     # Find existing file by name + folder
     existing_query = sup.table("files").select("id").eq("org_id", user["org_id"]).eq("name", filename).eq("is_deleted", False)
@@ -687,6 +791,8 @@ def api_files_download(file_id):
     if not file_result.data:
         return jsonify({"error": "File not found"}), 404
     fdata = file_result.data[0]
+    if fdata["org_id"] != user["org_id"]:
+        return jsonify({"error": "Permission denied"}), 403
     perm = _check_permission(sup, user["id"], user["org_id"], fdata.get("folder_id"))
     if not perm:
         return jsonify({"error": "Permission denied"}), 403
@@ -739,6 +845,13 @@ def api_files_delete(file_id):
 @login_required
 def api_versions(file_id):
     sup = get_supabase()
+    user = current_user()
+    file_check = sup.table("files").select("org_id, folder_id").eq("id", file_id).maybe_single().execute()
+    if not file_check or not file_check.data or file_check.data["org_id"] != user["org_id"]:
+        return jsonify({"error": "Permission denied"}), 403
+    perm = _check_permission(sup, user["id"], user["org_id"], file_check.data.get("folder_id"))
+    if not perm:
+        return jsonify({"error": "Permission denied"}), 403
     rows = sup.table("file_versions").select("*").eq("file_id", file_id).order("version_number", desc=True).execute().data
     result = []
     for r in rows:
@@ -757,6 +870,12 @@ def api_restore_version(file_id, version_no):
     if user["role"] == "read_only":
         return jsonify({"error": "Permission denied"}), 403
     sup = get_supabase()
+    f = sup.table("files").select("name, folder_id, org_id").eq("id", file_id).maybe_single().execute()
+    if not f or not f.data or f.data["org_id"] != user["org_id"]:
+        return jsonify({"error": "Permission denied"}), 403
+    perm = _check_permission(sup, user["id"], user["org_id"], f.data.get("folder_id"))
+    if not perm or perm == "read_only":
+        return jsonify({"error": "Permission denied"}), 403
     ver = sup.table("file_versions").select("id").eq("file_id", file_id).eq("version_number", version_no).maybe_single().execute()
     if not ver or not ver.data:
         return jsonify({"error": "Version not found"}), 404
@@ -1115,6 +1234,8 @@ def api_files_share(file_id):
     if not file_result.data:
         return jsonify({"error": "File not found"}), 404
     fdata = file_result.data[0]
+    if fdata["org_id"] != user["org_id"]:
+        return jsonify({"error": "Permission denied"}), 403
     perm = _check_permission(sup, user["id"], user["org_id"], fdata.get("folder_id"))
     if not perm or perm == "read_only":
         return jsonify({"error": "Permission denied"}), 403
@@ -1133,7 +1254,7 @@ def api_files_share(file_id):
         "expires_at": expires_at,
     }
     if password:
-        insert_data["password_hash"] = hashlib.sha256(password.encode()).hexdigest()
+        insert_data["password_hash"] = hash_share_password(password)
     result = sup.table("shared_links").insert(insert_data).execute()
     log_action("share_file", fdata["name"], f"folder={_resolve_folder_name(sup, fdata.get('folder_id'))} token={token[:8]}...")
     print(f"[SHARE] Created link for file '{fdata['name']}', token={token[:8]}...")
@@ -1144,6 +1265,9 @@ def api_files_share(file_id):
 def api_files_shares(file_id):
     sup = get_supabase()
     user = current_user()
+    file_check = sup.table("files").select("org_id").eq("id", file_id).maybe_single().execute()
+    if not file_check or not file_check.data or file_check.data["org_id"] != user["org_id"]:
+        return jsonify({"error": "Permission denied"}), 403
     shares = sup.table("shared_links").select("*").eq("file_id", file_id).order("created_at", desc=True).execute().data
     result = []
     for s in shares:
@@ -1157,6 +1281,9 @@ def api_files_shares(file_id):
 def api_files_unshare(file_id, share_id):
     sup = get_supabase()
     user = current_user()
+    file_check = sup.table("files").select("org_id").eq("id", file_id).maybe_single().execute()
+    if not file_check or not file_check.data or file_check.data["org_id"] != user["org_id"]:
+        return jsonify({"error": "Permission denied"}), 403
     sup.table("shared_links").delete().eq("id", share_id).eq("file_id", file_id).execute()
     f = sup.table("files").select("name").eq("id", file_id).maybe_single().execute()
     log_action("remove_share", f.data["name"] if f and f.data else str(file_id))
@@ -1174,6 +1301,12 @@ def api_shared_download(token):
         exp = dt.fromisoformat(link_data["expires_at"].replace("Z", "+00:00")) if "T" in link_data["expires_at"] else dt.strptime(link_data["expires_at"][:19], "%Y-%m-%dT%H:%M:%S")
         if dt.utcnow() > exp:
             return jsonify({"error": "Link has expired"}), 410
+    # Enforce share password if set.
+    pw_hash = link_data.get("password_hash")
+    if pw_hash:
+        provided = request.args.get("password", "")
+        if not verify_share_password(provided, pw_hash):
+            return jsonify({"error": "Password required", "password_required": True}), 401
     fdata = link_data.get("files", {})
     file_id = link_data["file_id"]
     org_id = fdata.get("org_id")
@@ -1227,6 +1360,12 @@ def api_shared_preview(token):
     if not link or not link.data:
         return jsonify({"error": "Link not found"}), 404
     link_data = link.data
+    # Enforce share password if set.
+    pw_hash = link_data.get("password_hash")
+    if pw_hash:
+        provided = request.args.get("password", "")
+        if not verify_share_password(provided, pw_hash):
+            return jsonify({"error": "Password required", "password_required": True}), 401
     fdata = link_data.get("files", {})
     file_id = link_data["file_id"]
     org_id = fdata.get("org_id")
@@ -1264,6 +1403,8 @@ def api_files_email(file_id):
     if not file_result.data:
         return jsonify({"error": "File not found"}), 404
     fdata = file_result.data[0]
+    if fdata["org_id"] != user["org_id"]:
+        return jsonify({"error": "Permission denied"}), 403
     perm = _check_permission(sup, user["id"], user["org_id"], fdata.get("folder_id"))
     if not perm or perm == "read_only":
         return jsonify({"error": "Permission denied"}), 403
@@ -1280,6 +1421,22 @@ def api_files_email(file_id):
     smtp_from_name = os.getenv("SMTP_FROM_NAME", "TeamVault")
     if not smtp_host or not smtp_user:
         return jsonify({"error": "Email not configured — ask admin to set SMTP_* variables in .env"}), 500
+
+    # Validate recipient addresses to prevent SMTP/email header injection.
+    import re
+    EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
+    MAX_RECIPIENTS = 50
+    raw = [r.strip() for r in recipients.replace(";", ",").split(",") if r.strip()]
+    email_list = []
+    for addr in raw:
+        if not EMAIL_RE.match(addr) or "\n" in addr or "\r" in addr:
+            return jsonify({"error": f"Invalid recipient address: {addr}"}), 400
+        email_list.append(addr)
+    if len(email_list) > MAX_RECIPIENTS:
+        return jsonify({"error": f"Too many recipients (max {MAX_RECIPIENTS})"}), 400
+    if not all(EMAIL_RE.match(smtp_from)) and "@" not in smtp_from:
+        return jsonify({"error": "SMTP_FROM is misconfigured"}), 500
+
     # Create share link for email
     token = secrets.token_urlsafe(24)
     from datetime import timedelta
@@ -1291,13 +1448,19 @@ def api_files_email(file_id):
         "expires_at": expires_at,
     }).execute()
     share_url = f"{request.host_url}shared/{token}"
-    email_list = [r.strip() for r in recipients.split(",") if r.strip()]
-    for addr in email_list:
-        msg = MIMEMultipart()
-        msg["From"] = f"{smtp_from_name} <{smtp_from}>"
-        msg["To"] = addr
-        msg["Subject"] = f"{user['username']} shared a file with you — {fdata['name']}"
-        body = f"""Hi,
+
+    safe_from_name = re.sub(r"[\r\n]", "", smtp_from_name)
+    subject = re.sub(r"[\r\n]", "", f"{user['username']} shared a file with you — {fdata['name']}")
+    try:
+        server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
+        server.starttls()
+        server.login(smtp_user, smtp_pass)
+        for addr in email_list:
+            msg = MIMEMultipart()
+            msg["From"] = f"{safe_from_name} <{smtp_from}>"
+            msg["To"] = addr
+            msg["Subject"] = subject
+            body = f"""Hi,
 
 {user['username']} shared a file with you via TeamVault.
 
@@ -1307,18 +1470,14 @@ Download link (expires in 7 days): {share_url}
 {message if message else ''}
 
 — TeamVault"""
-        msg.attach(MIMEText(body, "plain"))
-        try:
-            server = smtplib.SMTP(smtp_host, smtp_port)
-            server.starttls()
-            server.login(smtp_user, smtp_pass)
+            msg.attach(MIMEText(body, "plain"))
             server.sendmail(smtp_from, addr, msg.as_string())
-            server.quit()
-        except Exception as e:
-            print(f"[EMAIL] Failed to send to {addr}: {e}")
-            return jsonify({"error": f"Failed to send email: {str(e)[:200]}"}), 500
-    log_action("email_file", fdata["name"], f"folder={_resolve_folder_name(sup, fdata.get('folder_id'))} to={recipients}")
-    print(f"[EMAIL] Sent '{fdata['name']}' to {recipients}")
+        server.quit()
+    except Exception as e:
+        print(f"[EMAIL] Failed to send: {e}")
+        return jsonify({"error": "Failed to send email. Please try again later."}), 500
+    log_action("email_file", fdata["name"], f"folder={_resolve_folder_name(sup, fdata.get('folder_id'))} to={len(email_list)} recipient(s)")
+    print(f"[EMAIL] Sent '{fdata['name']}' to {len(email_list)} recipient(s)")
     return jsonify({"ok": True})
 
 # ── PREVIEW API ──────────────────────────────────────────────────────────
@@ -1335,6 +1494,8 @@ def api_files_preview(file_id):
     if not file_result.data:
         return jsonify({"error": "File not found"}), 404
     fdata = file_result.data[0]
+    if fdata["org_id"] != user["org_id"]:
+        return jsonify({"error": "Permission denied"}), 403
     perm = _check_permission(sup, user["id"], user["org_id"], fdata.get("folder_id"))
     if not perm:
         return jsonify({"error": "Permission denied"}), 403
@@ -1592,4 +1753,5 @@ check_supabase()
 
 if __name__ == "__main__":
     _ensure_backups_table()
-    app.run(debug=True, port=5000)
+    debug_mode = os.environ.get("FLASK_ENV", "development") == "development"
+    app.run(debug=debug_mode, port=int(os.environ.get("PORT", 5000)))
