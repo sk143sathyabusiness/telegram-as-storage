@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta id="session-timeout" content="1800">
 <title>TeamVault</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -48,6 +49,7 @@
     <div class="breadcrumb" id="breadcrumb">~/</div>
     <div class="topbar-user" id="topbar-user"></div>
     <span class="topbar-role" id="topbar-role"></span>
+    <span class="session-timer" id="session-timer" title="Idle session timeout"></span>
     <button class="btn-sm" onclick="logout()">Sign out</button>
   </div>
 
@@ -504,9 +506,9 @@
 
 <!-- ── SESSION EXPIRED MODAL ───────────────────────────────────────────── -->
 <div class="modal-backdrop" id="session-modal" style="display:none">
-  <div class="modal" style="max-width:400px">
-    <h3>🔒 Session expired</h3>
-    <div class="shared-meta" style="text-align:center;margin-bottom:14px">Your session ended. Please sign in again to continue.</div>
+    <div class="modal" style="max-width:400px">
+      <h3>🔒 Session expired</h3>
+      <div class="shared-meta" id="se-note" style="text-align:center;margin-bottom:14px">Your session ended. Please sign in again to continue.</div>
     <div class="field">
       <label>Username</label>
       <input id="se-user" placeholder="your username" autocomplete="username">

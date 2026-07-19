@@ -201,6 +201,14 @@ a      { color: var(--accent); text-decoration: none; }
   text-transform: uppercase; letter-spacing: .07em;
   background: var(--accent-dim);
 }
+.session-timer {
+  font-family: var(--mono); font-size: 11px; padding: 4px 10px;
+  border-radius: 10px; color: var(--muted);
+  background: rgba(148, 163, 184, .15);
+  border: 1px solid var(--glass-border);
+  transition: color .3s, background .3s, border-color .3s;
+  min-width: 52px; text-align: center;
+}
 .btn-sm {
   padding: 7px 15px; font-size: 12px; border-radius: var(--r);
   background: rgba(255, 255, 255, .6);
