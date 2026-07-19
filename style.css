@@ -209,6 +209,17 @@ a      { color: var(--accent); text-decoration: none; }
   transition: color .3s, background .3s, border-color .3s;
   min-width: 52px; text-align: center;
 }
+
+/* Password field with show/hide eye toggle */
+.pw-field { position: relative; display: flex; align-items: center; }
+.pw-field input { width: 100%; padding-right: 38px; }
+.pw-toggle {
+  position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+  border: none; background: transparent; cursor: pointer; font-size: 15px;
+  color: var(--muted); padding: 4px; line-height: 1; user-select: none;
+  transition: color .2s;
+}
+.pw-toggle:hover { color: var(--accent); }
 .btn-sm {
   padding: 7px 15px; font-size: 12px; border-radius: var(--r);
   background: rgba(255, 255, 255, .6);
