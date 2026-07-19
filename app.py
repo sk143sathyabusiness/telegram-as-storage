@@ -41,7 +41,7 @@ def _security_headers(resp):
         "img-src 'self' data: blob:; "
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "font-src 'self' https://fonts.gstatic.com; "
-        "script-src 'self' https://cdnjs.cloudflare.com; "
+        "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; "
         "connect-src 'self'; "
         "frame-ancestors 'none'; "
         "base-uri 'self'; "
@@ -257,6 +257,15 @@ def register_page():
 @app.route("/shared/<token>")
 def shared_page(token):
     return send_from_directory(app.root_path, "shared.html")
+
+@app.route("/favicon.ico")
+def favicon():
+    # Minimal transparent SVG favicon to avoid 404 noise.
+    svg = (
+        "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>"
+        "<text y='26' font-size='26'>⬡</text></svg>"
+    )
+    return Response(svg, mimetype="image/svg+xml")
 
 _BLOCKED_STATIC = {
     ".env", ".env.example", ".secret_key", ".git", ".gitignore",
