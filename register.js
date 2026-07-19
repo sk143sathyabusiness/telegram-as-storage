@@ -8,21 +8,34 @@ function goStep(n) {
     hideErr(currentStep);
   }
 
-  document.getElementById(`step${currentStep}`).classList.remove('active');
-  const prevInd = document.getElementById(`step-ind-${currentStep}`);
-  prevInd.classList.remove('active');
-  if (n > currentStep) {
-    prevInd.classList.add('done');
-    prevInd.querySelector('.step-num').textContent = '✓';
-    const line = document.getElementById(`sl${currentStep}`);
-    if (line) line.classList.add('done');
-  }
-  currentStep = n;
-  document.getElementById(`step${n}`).classList.add('active');
-  const ind = document.getElementById(`step-ind-${n}`);
-  ind.classList.add('active');
-  ind.classList.remove('done');
-  ind.querySelector('.step-num').textContent = n;
+  const outgoing = document.getElementById(`step${currentStep}`);
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  const activate = () => {
+    document.getElementById(`step${currentStep}`).classList.remove('active');
+    const prevInd = document.getElementById(`step-ind-${currentStep}`);
+    prevInd.classList.remove('active');
+    if (n > currentStep) {
+      prevInd.classList.add('done');
+      prevInd.querySelector('.step-num').textContent = '✓';
+      const line = document.getElementById(`sl${currentStep}`);
+      if (line) line.classList.add('done');
+    }
+    currentStep = n;
+    const next = document.getElementById(`step${n}`);
+    next.classList.add('active');
+    next.style.animation = 'none';
+    void next.offsetWidth;
+    next.style.animation = '';
+    const ind = document.getElementById(`step-ind-${n}`);
+    ind.classList.add('active');
+    ind.classList.remove('done');
+    ind.querySelector('.step-num').textContent = n;
+  };
+
+  if (reduce || !outgoing) { activate(); return; }
+  outgoing.style.animation = 'step-exit .28s ease both';
+  setTimeout(activate, 260);
 }
 
 function validate(step) {
@@ -132,11 +145,36 @@ async function submitForm() {
     document.getElementById('success-email').textContent = payload.contact_email;
     document.getElementById('success-ref').textContent = payload.org_name;
     document.getElementById('success').classList.add('show');
+    celebrate();
     setTimeout(() => { window.location.href = '/?registered=1'; }, 4000);
   } catch {
     showErr(3, 'Network error. Please check your connection and try again.');
     btn.disabled = false; btn.textContent = 'Submit Request ✓';
   }
+}
+
+// celebratory burst of particles on successful submit
+function celebrate() {
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const colors = ['#0ea5b7', '#7c3aed', '#2563eb', '#059669', '#d97706'];
+  const burst = document.createElement('div');
+  burst.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:999';
+  document.body.appendChild(burst);
+  const cx = window.innerWidth / 2, cy = window.innerHeight * 0.38;
+  for (let i = 0; i < 70; i++) {
+    const p = document.createElement('span');
+    const angle = (Math.PI * 2 * i) / 70 + Math.random();
+    const dist = 120 + Math.random() * 260;
+    const dx = Math.cos(angle) * dist, dy = Math.sin(angle) * dist;
+    const size = 5 + Math.random() * 7;
+    p.style.cssText = `position:absolute;left:${cx}px;top:${cy}px;width:${size}px;height:${size}px;border-radius:${Math.random()>.5?'50%':'2px'};background:${colors[i%colors.length]};opacity:1;transform:translate(0,0) scale(1);transition:transform .9s cubic-bezier(.16,1,.3,1),opacity .9s ease`;
+    burst.appendChild(p);
+    requestAnimationFrame(() => {
+      p.style.transform = `translate(${dx}px,${dy}px) scale(0)`;
+      p.style.opacity = '0';
+    });
+  }
+  setTimeout(() => burst.remove(), 1000);
 }
 
 // Password eye toggle

@@ -102,6 +102,8 @@ function showView(name) {
   if (name === "users")        loadUserManagement();
   if (name === "versions-all") loadAllVersions();
   if (name === "backup")       loadBackups();
+  const panel = document.getElementById(`view-${name}`);
+  if (panel) revealOnScroll(panel);
 }
 
 // ── BREADCRUMB ──────────────────────────────────────────────────────────
@@ -800,7 +802,7 @@ function showAddUserModal() {
   document.getElementById("au-username").value = "";
   document.getElementById("au-password").value = "";
   document.getElementById("au-role").value = "read_write";
-  document.getElementById("add-user-modal").style.display = "flex";
+  openModal("add-user-modal");
   setTimeout(() => document.getElementById("au-username").focus(), 100);
 }
 
@@ -830,7 +832,7 @@ function showEditUserModal(userId, username, role) {
   document.getElementById("eu-username").value = username;
   document.getElementById("eu-password").value = "";
   document.getElementById("eu-role").value = role;
-  document.getElementById("edit-user-modal").style.display = "flex";
+  openModal("edit-user-modal");
 }
 
 async function saveUserEdit() {
@@ -866,7 +868,7 @@ async function showUserActivity(userId, username) {
   document.getElementById("ua-username-display").textContent = username;
   const list = document.getElementById("user-activity-list");
   list.innerHTML = '<div style="text-align:center;padding:20px;color:var(--muted)">Loading…</div>';
-  document.getElementById("user-activity-modal").style.display = "flex";
+  openModal("user-activity-modal");
   const r = await fetch(`${API}/users/${userId}/activity?limit=100`);
   if (!r.ok) { list.innerHTML = '<div style="text-align:center;padding:20px;color:var(--danger)">Failed to load</div>'; return; }
   const logs = await r.json();
@@ -889,7 +891,7 @@ async function showUserActivity(userId, username) {
 async function showUserPermissions(userId, username) {
   _umPermsUserId = userId;
   document.getElementById("up-username-display").textContent = username;
-  document.getElementById("user-perms-modal").style.display = "flex";
+  openModal("user-perms-modal");
   const folderSelect = document.getElementById("up-folder");
   folderSelect.innerHTML = '<option value="">Root (all folders)</option>';
   for (const f of _umFolders) {
@@ -1005,7 +1007,7 @@ function showGrantAccess(folderId, folderName) {
     select.innerHTML += `<option value="${u.id}">${escapeHtml(u.username)} (${u.role.replace("_"," ")})</option>`;
   }
   document.getElementById("ga-level").value = "read_only";
-  document.getElementById("grant-access-modal").style.display = "flex";
+  openModal("grant-access-modal");
 }
 
 async function grantFolderAccess() {
@@ -1045,7 +1047,7 @@ function shareFile(fileId, filename) {
   document.getElementById("share-expiry").value = 7;
   document.getElementById("share-password").value = "";
   document.getElementById("share-existing-links").innerHTML = "";
-  document.getElementById("share-modal").style.display = "flex";
+  openModal("share-modal");
   loadExistingShares(fileId);
 }
 
@@ -1118,7 +1120,7 @@ function emailFile(fileId, filename) {
   _emailFileName = filename;
   document.getElementById("email-recipients").value = "";
   document.getElementById("email-message").value = "";
-  document.getElementById("email-modal").style.display = "flex";
+  openModal("email-modal");
 }
 
 async function sendEmail(event) {
@@ -1148,7 +1150,7 @@ function previewFile(fileId, filename, sizeBytes) {
   document.getElementById("preview-title").textContent = filename;
   const content = document.getElementById("preview-content");
   content.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Loading preview…</div>';
-  document.getElementById("preview-modal").style.display = "flex";
+  openModal("preview-modal");
   const ext = filename.split(".").pop().toLowerCase();
   const mimeMap = {
     png:"image/png", jpg:"image/jpeg", jpeg:"image/jpeg", gif:"image/gif",
@@ -1452,7 +1454,7 @@ function editFile(fileId, filename, sizeBytes) {
   document.getElementById("edit-textarea-wrap").style.display = "none";
   document.getElementById("edit-binary-notice").style.display = "none";
   document.getElementById("edit-rich-wrap").style.display = "none";
-  document.getElementById("edit-modal").style.display = "flex";
+  openModal("edit-modal");
   if (ext === "docx") {
     document.getElementById("edit-rich-wrap").style.display = "block";
     document.getElementById("edit-rich-content").innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Loading document…</div>';
@@ -1603,15 +1605,73 @@ async function saveEditRich() {
 }
 
 // ── MODAL UTILS ────────────────────────────────────────────────────────
+function openModal(id) {
+  const el = document.getElementById(id);
+  el.style.display = "flex";
+  const box = el.querySelector(".modal");
+  if (box) {
+    box.style.animation = "none";
+    void box.offsetWidth;
+    box.style.animation = "modal-pop .38s cubic-bezier(.16,1,.3,1) both";
+  }
+  el.style.animation = "none";
+  void el.offsetWidth;
+  el.style.animation = "backdrop-in .3s ease both";
+}
 function closeModal(id) {
-  document.getElementById(id).style.display = "none";
-  if (_previewBlobUrl) { URL.revokeObjectURL(_previewBlobUrl); _previewBlobUrl = null; }
+  const el = document.getElementById(id);
+  const box = el.querySelector(".modal");
+  const finish = () => {
+    el.style.display = "none";
+    if (box) box.style.animation = "";
+    el.style.animation = "";
+    if (_previewBlobUrl) { URL.revokeObjectURL(_previewBlobUrl); _previewBlobUrl = null; }
+  };
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (reduce || !box) { finish(); return; }
+  el.style.animation = "backdrop-out .25s ease both";
+  box.style.animation = "modal-pop-out .25s ease both";
+  setTimeout(finish, 240);
 }
 document.querySelectorAll(".modal-backdrop").forEach(el => {
   el.addEventListener("click", e => {
     if (e.target === el) closeModal(el.id);
   });
 });
+
+// Scroll-reveal for lists (used by panels on render)
+function revealOnScroll(container) {
+  const items = container.querySelectorAll(".version-card, .trash-card, .fa-card, .um-stat-card, .log-row");
+  if (!items.length) return;
+  if (!("IntersectionObserver" in window)) return;
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach(en => {
+      if (en.isIntersecting) { en.target.style.animationPlayState = "running"; io.unobserve(en.target); }
+    });
+  }, { threshold: .05 });
+  items.forEach(it => { it.style.animationPlayState = "paused"; io.observe(it); });
+}
+
+// Ripple effect on buttons
+function attachRipple() {
+  document.querySelectorAll(".btn-primary, .btn-sm, .upload-btn, .nav .btn-nav").forEach(btn => {
+    if (btn.dataset.ripple) return;
+    btn.dataset.ripple = "1";
+    btn.addEventListener("click", e => {
+      const r = document.createElement("span");
+      const rect = btn.getBoundingClientRect();
+      const size = Math.max(rect.width, rect.height);
+      r.style.cssText = `position:absolute;border-radius:50%;background:rgba(255,255,255,.5);pointer-events:none;width:${size}px;height:${size}px;left:${e.clientX-rect.left-size/2}px;top:${e.clientY-rect.top-size/2}px;transform:scale(0);animation:ripple .6s ease-out forwards;`;
+      const prev = btn.style.position;
+      if (getComputedStyle(btn).position === "static") btn.style.position = "relative";
+      btn.style.overflow = "hidden";
+      btn.appendChild(r);
+      setTimeout(() => r.remove(), 600);
+      if (prev) btn.style.position = prev;
+    });
+  });
+}
+document.addEventListener("DOMContentLoaded", attachRipple);
 
 // ── DRAG & DROP UPLOAD ──────────────────────────────────────────────────
 const mainPanel = document.getElementById("main-panel");
