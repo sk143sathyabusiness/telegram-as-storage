@@ -286,12 +286,6 @@ a      { color: var(--accent); text-decoration: none; }
   transition: color .2s, background .2s, transform .15s;
 }
 .folder-add:hover { color: var(--accent); background: var(--accent-dim); transform: translateX(2px); }
-.folder-delete {
-  display: flex; align-items: center; gap: 6px; padding: 6px 11px;
-  font-size: 11px; color: var(--muted); cursor: pointer; border-radius: var(--r);
-  transition: color .2s, background .2s;
-}
-.folder-delete:hover { color: var(--red); background: rgba(220, 38, 38, .08); }
 .sidebar-divider { border: none; border-top: 1px solid rgba(148, 163, 184, .22); margin: 8px 16px; }
 
 /* ── MAIN PANEL ──────────────────────────────────────────────────────── */
