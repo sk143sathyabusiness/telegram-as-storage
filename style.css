@@ -305,6 +305,26 @@ a      { color: var(--accent); text-decoration: none; }
 .upload-btn:hover { transform: translateY(-1px); filter: brightness(1.05); box-shadow: 0 10px 24px var(--accent-glow); }
 #file-input { display: none; }
 
+.file-search {
+  display: flex; align-items: center; gap: 7px;
+  background: rgba(255, 255, 255, .7);
+  border: 1px solid rgba(148, 163, 184, .3);
+  border-radius: var(--r); padding: 7px 12px;
+  transition: border-color .2s, box-shadow .2s, background .2s;
+}
+.file-search:focus-within {
+  border-color: var(--accent);
+  background: #fff;
+  box-shadow: 0 0 0 4px var(--accent-dim);
+}
+.file-search input {
+  background: transparent; border: none; outline: none;
+  color: var(--text); font-family: var(--sans); font-size: 13px; width: 160px;
+}
+.file-search input::placeholder { color: rgba(124, 138, 163, .55); }
+.file-search-icon { font-size: 13px; color: var(--accent); }
+.file-search .btn-sm { padding: 2px 8px; font-size: 11px; }
+
 .upload-progress-area {
   padding: 12px 22px;
   background: var(--glass-bg);
