@@ -162,7 +162,9 @@ function makeFolderNode(folder, children, depth) {
   const item = document.createElement("div");
   item.className = "sidebar-item" + (currentFolderId === folder.id ? " active" : "");
   item.style.paddingLeft = (8 + depth * 12) + "px";
-  item.innerHTML = `<span class="icon">📁</span> <span class="folder-label">${folder.name}</span>`;
+  const canDelete = currentUser && (currentUser.role === "org_admin" || currentUser.role === "master_admin");
+  item.innerHTML = `<span class="icon">📁</span> <span class="folder-label">${folder.name}</span>`
+    + (canDelete ? `<button type="button" class="folder-del-btn" title="Delete folder" data-fid="${folder.id}" data-fname="${folder.name.replace(/"/g,'&quot;')}">🗑</button>` : ``);
   item.onclick = () => navigateFolder(folder.id, folder.name);
   wrap.appendChild(item);
   if (children[folder.id]) {
@@ -176,7 +178,7 @@ function makeFolderNode(folder, children, depth) {
     add.onclick = (e) => { e.stopPropagation(); promptNewFolder(folder.id); };
     wrap.appendChild(add);
   }
-  if (currentUser && (currentUser.role === "org_admin" || currentUser.role === "master_admin")) {
+  if (canDelete) {
     const del = document.createElement("div");
     del.className = "folder-delete";
     del.style.paddingLeft = (8 + (depth + 1) * 12) + "px";
@@ -186,6 +188,14 @@ function makeFolderNode(folder, children, depth) {
   }
   return wrap;
 }
+
+// Sidebar inline folder delete buttons (event-delegated so they survive re-renders).
+document.addEventListener("click", e => {
+  const btn = e.target.closest(".folder-del-btn");
+  if (!btn) return;
+  e.stopPropagation();
+  deleteFolder(btn.dataset.fid, btn.dataset.fname);
+});
 
 function navigateFolder(id, name) {
   currentFolderId = id;

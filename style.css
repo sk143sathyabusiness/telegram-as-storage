@@ -264,11 +264,21 @@ a      { color: var(--accent); text-decoration: none; }
   box-shadow: inset 2px 0 0 var(--accent), 0 4px 14px var(--accent-glow);
 }
 .sidebar-item .icon  { font-size: 15px; flex-shrink: 0; }
+.sidebar-item .folder-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar-item .count {
   margin-left: auto; font-family: var(--mono); font-size: 10px;
   color: var(--accent); background: var(--accent-dim); padding: 2px 7px;
   border-radius: 8px; font-weight: 600;
 }
+.folder-del-btn {
+  margin-left: auto; border: none; background: transparent; cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 4px 6px; border-radius: 7px;
+  color: var(--muted); opacity: 0; transform: scale(.85);
+  transition: opacity .15s, transform .15s, background .2s, color .2s;
+}
+.sidebar-item:hover .folder-del-btn,
+.sidebar-item.active .folder-del-btn { opacity: .8; transform: scale(1); }
+.folder-del-btn:hover { background: rgba(220, 38, 38, .12); color: var(--red); opacity: 1; }
 .folder-children { padding-left: 16px; }
 .folder-add {
   display: flex; align-items: center; gap: 6px; padding: 7px 11px;
