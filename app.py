@@ -7,7 +7,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 from functools import wraps
-from flask import Flask, request, jsonify, session, send_from_directory, Response, stream_with_context
+from flask import Flask, request, jsonify, session, send_from_directory, Response, stream_with_context, make_response
 from werkzeug.routing import BaseConverter
 from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
@@ -30,6 +30,10 @@ app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get('MAX_UPLOAD_SIZE', 10 * 10
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_SECURE'] = os.environ.get('FLASK_ENV', 'development') != 'development'
+
+# Idle session timeout. A login is valid for this many seconds of inactivity.
+SESSION_TIMEOUT_SECONDS = int(os.environ.get('SESSION_TIMEOUT_SECONDS', 1800))  # 30 min default
+app.config['PERMANENT_SESSION_LIFETIME'] = SESSION_TIMEOUT_SECONDS
 
 @app.after_request
 def _security_headers(resp):
@@ -110,6 +114,36 @@ def check_supabase():
 def set_rls_context(user_id, role):
     sup = get_supabase()
     sup.rpc("set_app_context", {"uid": user_id, "urole": role}).execute()
+
+# ── IDLE SESSION TIMEOUT ───────────────────────────────────────────────────
+# We store a monotonic "last activity" timestamp in the session. On every
+# authenticated request we reject the session if it has been idle longer than
+# SESSION_TIMEOUT_SECONDS, and otherwise bump the timestamp.
+@app.before_request
+def _enforce_session_timeout():
+    # Only act on requests that already carry a logged-in session.
+    if "user_id" not in session:
+        return
+    # Whitelist endpoints that must work even on a (possibly) expired session.
+    rule = request.endpoint or ""
+    if rule in ("api_login", "api_logout", "static_files", "index",
+                "register_page", "shared_page", "favicon", "api_shared_download",
+                "api_shared_info", "api_shared_preview"):
+        return
+    now = datetime.utcnow().timestamp()
+    last = session.get("_last_activity")
+    if last is None:
+        # Legacy session created before timeout tracking — give it a fresh window.
+        session["_last_activity"] = now
+        session.permanent = True
+        return
+    if (now - float(last)) > SESSION_TIMEOUT_SECONDS:
+        session.clear()
+        if request.path.startswith("/api/"):
+            return jsonify({"error": "Session expired. Please sign in again.", "session_expired": True}), 401
+        return
+    session["_last_activity"] = now
+    session.permanent = True
 
 def _tg_configured():
     return telegram_bot is not None and telegram_bot.is_configured()
@@ -248,7 +282,13 @@ def _login_rate_limit_register_success(key: str):
 
 @app.route("/")
 def index():
-    return send_from_directory(app.root_path, "index.html")
+    with open(os.path.join(app.root_path, "index.html"), "r", encoding="utf-8") as f:
+        html = f.read()
+    html = html.replace('<meta id="session-timeout" content="1800">',
+                        f'<meta id="session-timeout" content="{SESSION_TIMEOUT_SECONDS}">')
+    resp = make_response(html)
+    resp.headers["X-Session-Timeout"] = str(SESSION_TIMEOUT_SECONDS)
+    return resp
 
 @app.route("/register")
 def register_page():
@@ -323,6 +363,8 @@ def api_login():
     session["org_id"] = user["org_id"]
     session["role"] = user["role"]
     session["username"] = user["username"]
+    session["_last_activity"] = datetime.utcnow().timestamp()
+    session.permanent = True
     print(f"[AUTH] Login: user='{user['username']}' role={user['role']} org_id={user['org_id']}")
     # Write audit log
     sup.table("audit_logs").insert({

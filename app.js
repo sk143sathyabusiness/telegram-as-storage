@@ -59,8 +59,15 @@ async function doLogin() {
     }
     await loadFolders();
     refreshFiles();
+    startSessionTimer();
   } else {
-    document.getElementById("login-err").textContent = "Invalid credentials";
+    let msg = "Invalid credentials";
+    try { const d = await r.json(); if (d && d.error) msg = d.error; } catch {}
+    if (r.status >= 500) msg = "Server error — check backend configuration (Supabase env vars?).";
+    document.getElementById("login-err").textContent = msg;
+    document.getElementById("login-err").classList.remove("shake");
+    void document.getElementById("login-err").offsetWidth;
+    document.getElementById("login-err").classList.add("shake");
   }
 }
 
@@ -1836,10 +1843,14 @@ const _origFetch = window.fetch;
 window.fetch = async function(url, opts) {
   const res = await _origFetch(url, opts);
   if (res.status === 401 && !_sessionModalShown && !String(url).includes("/api/login") && !String(url).includes("/api/me")) {
+    let expired = false;
+    try { const j = await res.clone().json(); if (j && j.session_expired) expired = true; } catch {}
     _sessionModalShown = true;
     openModal("session-modal");
     const u = document.getElementById("se-user");
     const p = document.getElementById("se-pass");
+    const note = document.getElementById("se-note");
+    if (note) note.textContent = expired ? "Your session was idle too long and has expired." : "Your session ended. Please sign in again to continue.";
     if (currentUser?.username) { u.value = currentUser.username; p.focus(); }
     else u.focus();
   }
@@ -1862,10 +1873,59 @@ async function sessionLogin() {
     toast("Welcome back — session restored");
     await loadFolders();
     refreshFiles();
+    startSessionTimer();
   } else {
     errEl.textContent = "Invalid credentials. Try again.";
   }
 }
+
+// ── IDLE SESSION COUNTDOWN ──────────────────────────────────────────────
+// Mirrors SESSION_TIMEOUT_SECONDS on the server. Warns the user in the last
+// 60s, then shows the re-login modal when the window elapses.
+let SESSION_TIMEOUT_MS = 1800 * 1000;
+(function readSessionTimeout() {
+  // Captured from the X-Session-Timeout response header on initial page load.
+  const meta = document.getElementById("session-timeout");
+  if (meta && meta.content) SESSION_TIMEOUT_MS = parseInt(meta.content, 10) * 1000;
+})();
+let _sessionDeadline = 0;
+let _sessionWarnTimer = null;
+
+function startSessionTimer() {
+  _sessionDeadline = Date.now() + SESSION_TIMEOUT_MS;
+  if (_sessionWarnTimer) clearInterval(_sessionWarnTimer);
+  const el = document.getElementById("session-timer");
+  _sessionWarnTimer = setInterval(() => {
+    if (_sessionModalShown) { if (el) el.textContent = ""; return; }
+    const remain = _sessionDeadline - Date.now();
+    if (remain <= 0) {
+      if (el) el.textContent = "";
+      if (!_sessionModalShown) {
+        _sessionModalShown = true;
+        openModal("session-modal");
+        const note = document.getElementById("se-note");
+        if (note) note.textContent = "Your session was idle too long and has expired.";
+        const u = document.getElementById("se-user"), p = document.getElementById("se-pass");
+        if (currentUser?.username) { u.value = currentUser.username; p.focus(); } else u.focus();
+      }
+      return;
+    }
+    const m = Math.floor(remain / 60000);
+    const s = Math.floor((remain % 60000) / 1000);
+    if (el) {
+      el.textContent = `⏱ ${m}:${String(s).padStart(2, "0")}`;
+      el.style.color = remain < 60000 ? "var(--danger)" : "var(--muted)";
+    }
+  }, 1000);
+}
+
+// Any user interaction resets the local countdown (server also tracks activity).
+["click", "keydown", "mousemove", "scroll", "touchstart"].forEach(ev =>
+  window.addEventListener(ev, () => {
+    if (currentUser && !_sessionModalShown) _sessionDeadline = Date.now() + SESSION_TIMEOUT_MS;
+  }, { passive: true })
+);
+
 
 
 
@@ -1893,5 +1953,6 @@ fetch(API + "/me").then(async r => {
     await loadFolders();
     refreshFiles();
     updateTrashCount();
+    startSessionTimer();
   }
 });
