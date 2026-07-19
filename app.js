@@ -178,14 +178,6 @@ function makeFolderNode(folder, children, depth) {
     add.onclick = (e) => { e.stopPropagation(); promptNewFolder(folder.id); };
     wrap.appendChild(add);
   }
-  if (canDelete) {
-    const del = document.createElement("div");
-    del.className = "folder-delete";
-    del.style.paddingLeft = (8 + (depth + 1) * 12) + "px";
-    del.innerHTML = `<span>🗑</span> delete`;
-    del.onclick = (e) => { e.stopPropagation(); deleteFolder(folder.id, folder.name); };
-    wrap.appendChild(del);
-  }
   return wrap;
 }
 
