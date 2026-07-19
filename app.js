@@ -1793,6 +1793,28 @@ document.addEventListener("keydown", e => {
 
 
 
+// ── PASSWORD EYE TOGGLE (applies to all .pw-toggle buttons) ────────────
+function initPasswordToggles(root = document) {
+  root.querySelectorAll(".pw-toggle[data-target]").forEach(btn => {
+    if (btn.dataset.bound) return;
+    btn.dataset.bound = "1";
+    btn.addEventListener("click", () => {
+      const input = document.getElementById(btn.dataset.target);
+      if (!input) return;
+      if (input.type === "password") {
+        input.type = "text";
+        btn.textContent = "🙈";
+        btn.setAttribute("aria-label", "Hide password");
+      } else {
+        input.type = "password";
+        btn.textContent = "👁️";
+        btn.setAttribute("aria-label", "Show password");
+      }
+    });
+  });
+}
+document.addEventListener("DOMContentLoaded", () => initPasswordToggles());
+
 // ── DOUBLE-CLICK TO DOWNLOAD ───────────────────────────────────────────
 document.getElementById("file-tbody").addEventListener("dblclick", e => {
   const tr = e.target.closest("tr");
@@ -1878,18 +1900,32 @@ async function sessionLogin() {
     errEl.textContent = "Invalid credentials. Try again.";
   }
 }
-
 // ── IDLE SESSION COUNTDOWN ──────────────────────────────────────────────
 // Mirrors SESSION_TIMEOUT_SECONDS on the server. Warns the user in the last
-// 60s, then shows the re-login modal when the window elapses.
-let SESSION_TIMEOUT_MS = 1800 * 1000;
+// 60s, then shows the re-login modal when the window elapses. A backgrounded
+// tab is paused so it never expires while you're simply looking at another tab.
+let SESSION_TIMEOUT_MS = 43200 * 1000;
 (function readSessionTimeout() {
-  // Captured from the X-Session-Timeout response header on initial page load.
   const meta = document.getElementById("session-timeout");
   if (meta && meta.content) SESSION_TIMEOUT_MS = parseInt(meta.content, 10) * 1000;
 })();
+
 let _sessionDeadline = 0;
 let _sessionWarnTimer = null;
+let _tabHidden = false;
+let _hiddenRemaining = 0;
+
+document.addEventListener("visibilitychange", () => {
+  _tabHidden = document.hidden;
+  if (_tabHidden) {
+    // Freeze the countdown while hidden.
+    _hiddenRemaining = Math.max(0, _sessionDeadline - Date.now());
+  } else if (_hiddenRemaining > 0) {
+    // Resume from where we left off when the tab is visible again.
+    _sessionDeadline = Date.now() + _hiddenRemaining;
+    _hiddenRemaining = 0;
+  }
+});
 
 function startSessionTimer() {
   _sessionDeadline = Date.now() + SESSION_TIMEOUT_MS;
@@ -1897,6 +1933,7 @@ function startSessionTimer() {
   const el = document.getElementById("session-timer");
   _sessionWarnTimer = setInterval(() => {
     if (_sessionModalShown) { if (el) el.textContent = ""; return; }
+    if (_tabHidden) return; // paused while tab not visible
     const remain = _sessionDeadline - Date.now();
     if (remain <= 0) {
       if (el) el.textContent = "";
@@ -1922,7 +1959,7 @@ function startSessionTimer() {
 // Any user interaction resets the local countdown (server also tracks activity).
 ["click", "keydown", "mousemove", "scroll", "touchstart"].forEach(ev =>
   window.addEventListener(ev, () => {
-    if (currentUser && !_sessionModalShown) _sessionDeadline = Date.now() + SESSION_TIMEOUT_MS;
+    if (currentUser && !_sessionModalShown && !_tabHidden) _sessionDeadline = Date.now() + SESSION_TIMEOUT_MS;
   }, { passive: true })
 );
 

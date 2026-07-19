@@ -27,7 +27,10 @@
     </div>
     <div class="field">
       <label>Password</label>
-      <input id="l-pass" type="password" placeholder="••••••••" autocomplete="current-password">
+      <div class="pw-field">
+        <input id="l-pass" type="password" placeholder="••••••••" autocomplete="current-password">
+        <button type="button" class="pw-toggle" data-target="l-pass" aria-label="Show password">👁️</button>
+      </div>
     </div>
     <button class="btn-primary" onclick="doLogin()">Sign in</button>
     <div class="login-err" id="login-err"></div>
@@ -101,7 +104,10 @@
           <div class="toolbar-title" id="folder-title">Root</div>
           <div class="passphrase-field">
             <span class="lock">🔑</span>
-            <input id="team-key" type="password" placeholder="team passphrase">
+            <div class="pw-field" style="flex:1">
+              <input id="team-key" type="password" placeholder="team passphrase">
+              <button type="button" class="pw-toggle" data-target="team-key" aria-label="Show passphrase">👁️</button>
+            </div>
           </div>
           <button class="upload-btn" onclick="document.getElementById('file-input').click()">
             ↑ Upload
@@ -312,7 +318,10 @@
     </div>
     <div class="field">
       <label>Password (optional)</label>
-      <input id="share-password" type="password" placeholder="leave blank for no password">
+      <div class="pw-field">
+        <input id="share-password" type="password" placeholder="leave blank for no password">
+        <button type="button" class="pw-toggle" data-target="share-password" aria-label="Show password">👁️</button>
+      </div>
     </div>
     <div class="modal-actions">
       <button class="btn-sm" onclick="closeModal('share-modal')">Close</button>
@@ -402,7 +411,10 @@
     </div>
     <div class="field">
       <label>Password</label>
-      <input id="au-password" type="password" placeholder="min 6 characters">
+      <div class="pw-field">
+        <input id="au-password" type="password" placeholder="min 6 characters">
+        <button type="button" class="pw-toggle" data-target="au-password" aria-label="Show password">👁️</button>
+      </div>
     </div>
     <div class="field">
       <label>Role</label>
@@ -429,7 +441,10 @@
     </div>
     <div class="field">
       <label>New Password (leave blank to keep current)</label>
-      <input id="eu-password" type="password" placeholder="Enter new password">
+      <div class="pw-field">
+        <input id="eu-password" type="password" placeholder="Enter new password">
+        <button type="button" class="pw-toggle" data-target="eu-password" aria-label="Show password">👁️</button>
+      </div>
     </div>
     <div class="field">
       <label>Role</label>
@@ -515,7 +530,10 @@
     </div>
     <div class="field">
       <label>Password</label>
-      <input id="se-pass" type="password" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key==='Enter')sessionLogin()">
+      <div class="pw-field">
+        <input id="se-pass" type="password" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key==='Enter')sessionLogin()">
+        <button type="button" class="pw-toggle" data-target="se-pass" aria-label="Show password">👁️</button>
+      </div>
     </div>
     <div class="shared-err" id="se-err"></div>
     <div class="modal-actions">

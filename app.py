@@ -32,8 +32,10 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_SECURE'] = os.environ.get('FLASK_ENV', 'development') != 'development'
 
 # Idle session timeout. A login is valid for this many seconds of inactivity.
-SESSION_TIMEOUT_SECONDS = int(os.environ.get('SESSION_TIMEOUT_SECONDS', 1800))  # 30 min default
+# Defaults to 12 hours so users are not forced to re-login repeatedly.
+SESSION_TIMEOUT_SECONDS = int(os.environ.get('SESSION_TIMEOUT_SECONDS', 43200))  # 12h default
 app.config['PERMANENT_SESSION_LIFETIME'] = SESSION_TIMEOUT_SECONDS
+app.config['SESSION_COOKIE_PATH'] = '/'
 
 @app.after_request
 def _security_headers(resp):

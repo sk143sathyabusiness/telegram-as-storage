@@ -73,7 +73,10 @@ function showPasswordPrompt(d) {
     <div class="shared-meta">${fmtSize(d.size_bytes)} · Password protected</div>
     <div class="field" style="text-align:left">
       <label>Password</label>
-      <input id="pw" type="password" placeholder="Enter link password" autocomplete="off">
+      <div class="pw-field">
+        <input id="pw" type="password" placeholder="Enter link password" autocomplete="off">
+        <button type="button" class="pw-toggle" data-target="pw" aria-label="Show password">👁️</button>
+      </div>
     </div>
     <button class="btn-primary" id="submit" style="width:100%;margin-top:6px">Unlock & Download</button>
     <div class="shared-err" id="err"></div>`;
@@ -116,6 +119,16 @@ function setErr(msg) {
   const el = document.getElementById("err");
   if (el) el.textContent = msg;
 }
+
+// password eye toggle (shared.html)
+document.querySelectorAll(".pw-toggle[data-target]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const input = document.getElementById(btn.dataset.target);
+    if (!input) return;
+    if (input.type === "password") { input.type = "text"; btn.textContent = "🙈"; }
+    else { input.type = "password"; btn.textContent = "👁️"; }
+  });
+});
 
 async function downloadWithProgress(r, onProgress) {
   const cl = +r.headers.get("Content-Length") || 0;
