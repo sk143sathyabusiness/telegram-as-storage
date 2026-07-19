@@ -142,11 +142,12 @@ async function submitForm() {
     }
     document.getElementById('steps-bar').style.display = 'none';
     ['step1','step2','step3'].forEach(id => document.getElementById(id).style.display='none');
-    document.getElementById('success-email').textContent = payload.contact_email;
     document.getElementById('success-ref').textContent = payload.org_name;
+    const notice = document.getElementById('success-email-notice');
+    if (notice && payload.contact_email) notice.textContent = `We'll keep ${payload.contact_email} on file as the primary contact.`;
     document.getElementById('success').classList.add('show');
     celebrate();
-    setTimeout(() => { window.location.href = '/?registered=1'; }, 4000);
+    setTimeout(() => { window.location.href = '/?registered=1'; }, 5000);
   } catch {
     showErr(3, 'Network error. Please check your connection and try again.');
     btn.disabled = false; btn.textContent = 'Submit Request ✓';

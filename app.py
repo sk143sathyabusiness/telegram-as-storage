@@ -254,6 +254,10 @@ def index():
 def register_page():
     return send_from_directory(app.root_path, "register.html")
 
+@app.route("/shared/<token>")
+def shared_page(token):
+    return send_from_directory(app.root_path, "shared.html")
+
 _BLOCKED_STATIC = {
     ".env", ".env.example", ".secret_key", ".git", ".gitignore",
     "app.py", "telegram_bot.py", "supabase_schema.sql",
@@ -344,9 +348,17 @@ def api_org_register():
     existing = sup.table("users").select("id").eq("username", data["username"].strip()).execute()
     if existing.data:
         return jsonify({"error": "Username already taken"}), 400
+    # Check org name uniqueness (organizations.name is UNIQUE)
+    name = data["org_name"].strip()
+    dup = sup.table("organizations").select("id, status").eq("name", name).maybe_single().execute()
+    if dup and dup.data:
+        if dup.data.get("status") in ("active", "approved"):
+            return jsonify({"error": "An organisation with this name already exists"}), 409
+        # a rejected/old org row — allow reuse but log it
+        sup.table("organizations").delete().eq("id", dup.data["id"]).execute()
     # Create org
     org_result = sup.table("organizations").insert({
-        "name": data["org_name"].strip(),
+        "name": name,
         "industry": data.get("industry", ""),
         "size": data.get("size", ""),
         "telegram_chat_id": str(data.get("chat_id", "")),
@@ -663,6 +675,43 @@ def api_files_get():
                 "uploaded_at": ver["uploaded_at"],
                 "uploaded_by_name": uploader_res.data["username"] if uploader_res and uploader_res.data else None,
             }
+        result.append(d)
+    return jsonify(result)
+
+@app.route("/api/files/search", methods=["GET"])
+@login_required
+def api_files_search():
+    user = current_user()
+    q = (request.args.get("q") or "").strip()
+    if not q:
+        return jsonify([])
+    sup = get_supabase()
+    err = _require_active_org(sup, user["org_id"])
+    if err:
+        return err
+    user_role = user["role"]
+    can_read_write = user_role in ("org_admin", "master_admin", "read_write")
+    rows = sup.table("files").select("id, name, folder_id, created_at").eq("org_id", user["org_id"]).eq("is_deleted", False).ilike("name", f"%{q}%").order("name").limit(100).execute().data
+    result = []
+    for r in rows:
+        folder_id = r.get("folder_id")
+        perm = _check_permission(sup, user["id"], user["org_id"], folder_id)
+        if not perm:
+            continue
+        d = dict(r)
+        d["can_download"] = bool(perm) and perm != "read_only"
+        d["can_write"] = can_read_write and perm != "read_only"
+        ver_result = sup.table("file_versions").select("version_number, size_bytes, uploaded_at, uploaded_by").eq("file_id", r["id"]).eq("is_current", True).maybe_single().execute()
+        if ver_result and ver_result.data:
+            ver = ver_result.data
+            uploader_res = sup.table("users").select("username").eq("id", ver["uploaded_by"]).maybe_single().execute()
+            d["current_version"] = {
+                "version_number": ver["version_number"],
+                "size_bytes": ver["size_bytes"],
+                "uploaded_at": ver["uploaded_at"],
+                "uploaded_by_name": uploader_res.data["username"] if uploader_res and uploader_res.data else None,
+            }
+        d["folder_name"] = _resolve_folder_name(sup, folder_id)
         result.append(d)
     return jsonify(result)
 

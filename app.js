@@ -360,7 +360,72 @@ async function uploadOne(file, encBlob, onProgress) {
 }
 
 // ── FILE LIST ───────────────────────────────────────────────────────────
+let _fileSearchActive = false;
+let _fileSearchTimer = null;
+
+function onFileSearch() {
+  const q = document.getElementById("file-search-input").value.trim();
+  document.getElementById("file-search-clear").style.display = q ? "" : "none";
+  clearTimeout(_fileSearchTimer);
+  _fileSearchTimer = setTimeout(() => {
+    if (q) { _fileSearchActive = true; runFileSearch(q); }
+    else { _fileSearchActive = false; refreshFiles(); }
+  }, 220);
+}
+
+function clearFileSearch() {
+  document.getElementById("file-search-input").value = "";
+  document.getElementById("file-search-clear").style.display = "none";
+  _fileSearchActive = false;
+  refreshFiles();
+}
+
+async function runFileSearch(q) {
+  const r = await fetch(`${API}/files/search?q=${encodeURIComponent(q)}`);
+  if (!r.ok) return;
+  const files = await r.json();
+  const tbody = document.getElementById("file-tbody");
+  const empty = document.getElementById("empty-files");
+  tbody.innerHTML = "";
+  if (!files.length) {
+    empty.style.display = "";
+    empty.innerHTML = `<div class="empty-icon">🔍</div>No files match "<strong>${escapeHtml(q)}</strong>".`;
+    return;
+  }
+  empty.style.display = "none";
+  document.getElementById("folder-title").textContent = `Search: ${q}` + (currentFolderId ? "" : "");
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    const v = f.current_version;
+    const tr = document.createElement("tr");
+    tr.style.animationDelay = `${i * 30}ms`;
+    tr.className = "row-enter";
+    tr.innerHTML = `
+      <td><span class="file-name">${f.name}</span></td>
+      <td><span class="file-meta">${v ? fmt(v.size_bytes) : "—"}</span></td>
+      <td><span class="version-badge">v${v ? v.version_number : "—"}</span></td>
+      <td><span class="file-meta">${f.folder_name !== "Root" ? "📁 " + f.folder_name : "Root"}</span></td>
+      <td><span class="file-meta">${v ? fmtDate(v.uploaded_at) : "—"}</span></td>
+      <td>
+        <div class="action-row">
+          <button class="btn-sm" onclick="previewFile('${f.id}','${f.name.replace(/'/g,"\\'")}','${v ? v.size_bytes : 0}')" title="Preview">👁</button>
+          <button class="btn-sm" onclick="shareFile('${f.id}','${f.name.replace(/'/g,"\\'")}')">Share</button>
+          <button class="btn-sm" onclick="emailFile('${f.id}','${f.name.replace(/'/g,"\\'")}')">Email</button>
+          <button class="btn-sm" onclick="editFile('${f.id}','${f.name.replace(/'/g,"\\'")}','${v ? v.size_bytes : 0}')">Edit</button>
+          <button class="btn-sm" onclick="downloadFile('${f.id}','${f.name.replace(/'/g,"\\'")}')">↓</button>
+          <button class="btn-sm" onclick="openVersions('${f.id}','${f.name.replace(/'/g,"\\'")}')">History</button>
+          ${currentUser?.role === "org_admin" || currentUser?.role === "master_admin"
+            ? `<button class="btn-sm danger" onclick="deleteFile('${f.id}')">Delete</button>`
+            : ""}
+        </div>
+      </td>`;
+    tbody.appendChild(tr);
+  }
+}
+
 async function refreshFiles() {
+  if (_fileSearchActive) return;
+  if (document.getElementById("folder-title")) document.getElementById("folder-title").textContent = currentFolderName;
   const fid = currentFolderId !== null ? `folder_id=${currentFolderId}` : "folder_id=";
   const r = await fetch(`${API}/files?${fid}`);
   if (!r.ok) return;
@@ -1764,8 +1829,46 @@ function hideSkeleton() {
   _skeletonShown = false;
 }
 
-// ── INIT ─────────────────────────────────────────────────────────────────
-updateBreadcrumb();
+// ── SESSION EXPIRY HANDLING ────────────────────────────────────────────
+let _sessionModalShown = false;
+
+const _origFetch = window.fetch;
+window.fetch = async function(url, opts) {
+  const res = await _origFetch(url, opts);
+  if (res.status === 401 && !_sessionModalShown && !String(url).includes("/api/login") && !String(url).includes("/api/me")) {
+    _sessionModalShown = true;
+    openModal("session-modal");
+    const u = document.getElementById("se-user");
+    const p = document.getElementById("se-pass");
+    if (currentUser?.username) { u.value = currentUser.username; p.focus(); }
+    else u.focus();
+  }
+  return res;
+};
+
+async function sessionLogin() {
+  const username = document.getElementById("se-user").value.trim();
+  const password = document.getElementById("se-pass").value;
+  const errEl = document.getElementById("se-err");
+  errEl.textContent = "";
+  const r = await fetch(API + "/login", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({username, password})
+  });
+  if (r.ok) {
+    currentUser = await r.json();
+    _sessionModalShown = false;
+    closeModal("session-modal");
+    toast("Welcome back — session restored");
+    await loadFolders();
+    refreshFiles();
+  } else {
+    errEl.textContent = "Invalid credentials. Try again.";
+  }
+}
+
+
+
 
 const params = new URLSearchParams(window.location.search);
 if (params.get("registered") === "1") {

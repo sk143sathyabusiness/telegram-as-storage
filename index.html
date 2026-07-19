@@ -110,6 +110,11 @@
           <button class="btn-sm" onclick="refreshFiles(); toast('Files refreshed')" title="Refresh file list">
             ↻
           </button>
+          <div class="file-search">
+            <span class="file-search-icon">🔍</span>
+            <input id="file-search-input" placeholder="Search files…" oninput="onFileSearch()" autocomplete="off">
+            <button class="btn-sm" id="file-search-clear" style="display:none" onclick="clearFileSearch()">✕</button>
+          </div>
           <input type="file" id="file-input" multiple onchange="uploadFiles(this)">
           <input type="file" id="folder-input" webkitdirectory multiple onchange="uploadFiles(this)" style="display:none">
         </div>
@@ -493,6 +498,26 @@
     <div class="modal-actions">
       <button class="btn-sm" onclick="closeModal('grant-access-modal')">Cancel</button>
       <button class="btn-sm active" onclick="grantFolderAccess()">Grant Access</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── SESSION EXPIRED MODAL ───────────────────────────────────────────── -->
+<div class="modal-backdrop" id="session-modal" style="display:none">
+  <div class="modal" style="max-width:400px">
+    <h3>🔒 Session expired</h3>
+    <div class="shared-meta" style="text-align:center;margin-bottom:14px">Your session ended. Please sign in again to continue.</div>
+    <div class="field">
+      <label>Username</label>
+      <input id="se-user" placeholder="your username" autocomplete="username">
+    </div>
+    <div class="field">
+      <label>Password</label>
+      <input id="se-pass" type="password" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key==='Enter')sessionLogin()">
+    </div>
+    <div class="shared-err" id="se-err"></div>
+    <div class="modal-actions">
+      <button class="btn-sm active" onclick="sessionLogin()">Re-login</button>
     </div>
   </div>
 </div>
