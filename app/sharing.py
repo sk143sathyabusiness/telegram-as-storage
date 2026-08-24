@@ -146,15 +146,30 @@ def api_shared_download(token):
     message_ids = _parse_message_ids(ver["message_ids"])
     size_bytes = ver["size_bytes"]
     if not _tg_configured():
-        return jsonify({"error": "Telegram not configured"}), 500
+        return jsonify({"error": "Telegram not configured"}), 503
+    # Early check for Vercel read-only session file
+    try:
+        telegram_service._make_client()
+    except RuntimeError as e:
+        return jsonify({"error": str(e), "type": "RuntimeError"}), 503
+    except Exception as e:
+        if "unable to open database file" in str(e).lower():
+            return jsonify({"error": "Telegram session file cannot be opened on Vercel (read-only filesystem). Set TG_SESSION_STRING env var from your local session.session via StringSession and redeploy.", "type": type(e).__name__}), 503
     org = sup.table("organizations").select("telegram_chat_id").eq("id", org_id).maybe_single().execute()
     chat_id = int(org.data["telegram_chat_id"]) if org and org.data and org.data.get("telegram_chat_id") else None
     if not chat_id:
         return jsonify({"error": "Telegram chat not configured"}), 500
 
     def generate():
-        for chunk in telegram_service.download_chunks_streaming(chat_id, message_ids):
-            yield chunk
+        try:
+            for chunk in telegram_service.download_chunks_streaming(chat_id, message_ids):
+                yield chunk
+        except Exception as e:
+            # Streaming errors can't change status after headers — log for Vercel
+            detail = str(e).split("\n")[0][:400]
+            if "unable to open database file" in detail.lower():
+                detail = "Telegram session file cannot be opened on Vercel (read-only filesystem). Set TG_SESSION_STRING env var."
+            print(f"[SHARED] Streaming failed: {type(e).__name__}: {detail}")
 
     print(f"[SHARED] Download: '{filename}', token={token[:8]}...")
     resp = Response(stream_with_context(generate()), mimetype="application/octet-stream")
@@ -208,15 +223,28 @@ def api_shared_preview(token):
     message_ids = _parse_message_ids(ver["message_ids"])
     size_bytes = ver["size_bytes"]
     if not _tg_configured():
-        return jsonify({"error": "Telegram not configured"}), 500
+        return jsonify({"error": "Telegram not configured"}), 503
+    try:
+        telegram_service._make_client()
+    except RuntimeError as e:
+        return jsonify({"error": str(e), "type": "RuntimeError"}), 503
+    except Exception as e:
+        if "unable to open database file" in str(e).lower():
+            return jsonify({"error": "Telegram session file cannot be opened on Vercel (read-only filesystem). Set TG_SESSION_STRING env var from your local session.session via StringSession and redeploy.", "type": type(e).__name__}), 503
     org = sup.table("organizations").select("telegram_chat_id").eq("id", org_id).maybe_single().execute()
     chat_id = int(org.data["telegram_chat_id"]) if org and org.data and org.data.get("telegram_chat_id") else None
     if not chat_id:
         return jsonify({"error": "Telegram chat not configured"}), 500
 
     def generate():
-        for chunk in telegram_service.download_chunks_streaming(chat_id, message_ids):
-            yield chunk
+        try:
+            for chunk in telegram_service.download_chunks_streaming(chat_id, message_ids):
+                yield chunk
+        except Exception as e:
+            detail = str(e).split("\n")[0][:400]
+            if "unable to open database file" in detail.lower():
+                detail = "Telegram session file cannot be opened on Vercel (read-only filesystem). Set TG_SESSION_STRING env var."
+            print(f"[SHARED-PREVIEW] Streaming failed: {type(e).__name__}: {detail}")
 
     resp = Response(stream_with_context(generate()), mimetype="application/octet-stream")
     resp.headers["Content-Disposition"] = f'inline; filename="{filename}"'
