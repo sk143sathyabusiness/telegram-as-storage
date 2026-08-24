@@ -1,15 +1,33 @@
+# Secrets — never commit real credentials
 .env
+.env.local
 .secret_key
+*.session
+*.session-journal
+
+# Venv / bytecode
 venv/
 __pycache__/
 *.log
 *.pyc
+*.pyo
+__pycache__/
+
+# Local databases
 *.sqlite
 *.sqlite3
-*.session
+teamvault.db
+
+# OS / editor
 node_modules/
 .DS_Store
-.env.local
+Thumbs.db
+
+# Legacy v0 artifacts — zero local storage policy (Telegram is the only store)
 uploads/
-vcpkg_installer.exe
-.env.example
+backups/
+*.exe
+*.bin
+
+# Keep the template — .env.example MUST stay tracked (placeholders only)
+!.env.example

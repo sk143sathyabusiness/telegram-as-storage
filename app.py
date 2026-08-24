@@ -79,12 +79,23 @@ class UUIDConverter(BaseConverter):
 app.url_map.converters['uuid'] = UUIDConverter
 
 SECRET_KEY_FILE = os.path.join(os.path.dirname(__file__), ".secret_key")
-if os.getenv("SECRET_KEY"):
-    app.secret_key = os.getenv("SECRET_KEY")
+# FLASK_SECRET_KEY is the canonical name (see .env.example).
+# SECRET_KEY is accepted as a legacy alias. File fallback is last resort.
+_raw_secret = (os.getenv("FLASK_SECRET_KEY") or os.getenv("SECRET_KEY") or "").strip()
+if _raw_secret:
+    # Warn if a weak / default-looking secret is used — never reuse the same
+    # value for FLASK_SECRET_KEY, ENCRYPTION_VERIFIER_SALT, or bootstrap passwords.
+    _WEAK_MARKERS = ("change_me", "generate_a", "choose_a", "Sathyamostpowerfuldeveloper")
+    if len(_raw_secret) < 32 or any(m in _raw_secret for m in _WEAK_MARKERS):
+        print("[WARN] FLASK_SECRET_KEY looks weak or reused — generate a long random value (secrets.token_hex(32)) and keep it unique.")
+    app.secret_key = _raw_secret
 else:
     try:
-        app.secret_key = open(SECRET_KEY_FILE, "r").read()
-    except (OSError, IOError):
+        # .secret_key is auto-generated on first run (0o600). Treat as fallback only.
+        app.secret_key = open(SECRET_KEY_FILE, "r").read().strip()
+        if len(app.secret_key) < 32:
+            raise ValueError("weak file secret")
+    except (OSError, IOError, ValueError):
         key = secrets.token_hex(32)
         try:
             with open(SECRET_KEY_FILE, "w") as f:
@@ -93,6 +104,7 @@ else:
         except OSError:
             pass
         app.secret_key = key
+        print("[INFO] Generated new .secret_key (store securely; overrides FLASK_SECRET_KEY if file exists).")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -110,7 +122,8 @@ def get_supabase() -> Client:
 def check_supabase():
     if not SUPABASE_URL or not SUPABASE_KEY:
         if __name__ == "__main__":
-            print("ERROR: SUPABASE_URL and SUPABASE_SERVICE_KEY must be set in .env")
+            # Never print the actual key value
+            print("ERROR: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set in .env (see .env.example)")
             raise SystemExit(1)
 
 def set_rls_context(user_id, role):
@@ -234,7 +247,21 @@ def _parse_message_ids(raw):
 # ── SHARE LINK PASSWORD HASHING ────────────────────────────────────────────
 # Shared-link passwords are hashed with PBKDF2 (salted) instead of plain SHA-256
 # so a leak of the metadata table does not reveal usable password hashes.
-_SHARE_PW_SALT = b"teamvault-share-v1"
+# Salt is derived from ENCRYPTION_VERIFIER_SALT env var so each deployment
+# has a unique salt. Falls back to a static salt for legacy rows.
+_SHARE_PW_SALT_STATIC = b"teamvault-share-v1"
+_raw_share_salt = (os.getenv("ENCRYPTION_VERIFIER_SALT") or "").strip()
+if _raw_share_salt:
+    if len(_raw_share_salt) < 16:
+        print("[WARN] ENCRYPTION_VERIFIER_SALT is too short — use at least 16 random characters and do not reuse FLASK_SECRET_KEY.")
+    _SHARE_PW_SALT = _raw_share_salt.encode()
+    # Warn if the same value is reused for Flask secret (separate purposes)
+    if _raw_share_salt == (os.getenv("FLASK_SECRET_KEY") or os.getenv("SECRET_KEY") or ""):
+        print("[WARN] ENCRYPTION_VERIFIER_SALT == FLASK_SECRET_KEY — use distinct random values.")
+else:
+    _SHARE_PW_SALT = _SHARE_PW_SALT_STATIC
+    print("[INFO] ENCRYPTION_VERIFIER_SALT not set — using built-in salt. Set a unique value in .env for stronger isolation.")
+
 def hash_share_password(password: str) -> str:
     dk = hashlib.pbkdf2_hmac("sha256", password.encode(), _SHARE_PW_SALT, 100_000)
     return "pbkdf2$" + dk.hex()
@@ -244,8 +271,12 @@ def verify_share_password(password: str, stored: str) -> bool:
         # Legacy plain-SHA256 fallback (no salt) for old rows.
         return stored == hashlib.sha256(password.encode()).hexdigest()
     expected = stored.split("$", 1)[1]
-    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), _SHARE_PW_SALT, 100_000)
-    return secrets.compare_digest(dk.hex(), expected)
+    # Try current deployment salt first, then static fallback for links created before env was set
+    for _salt in (_SHARE_PW_SALT, _SHARE_PW_SALT_STATIC):
+        dk = hashlib.pbkdf2_hmac("sha256", password.encode(), _salt, 100_000)
+        if secrets.compare_digest(dk.hex(), expected):
+            return True
+    return False
 
 # ── LOGIN BRUTE-FORCE PROTECTION ─────────────────────────────────────────────
 # In-memory rate limiter: per-IP + per-username, with exponential lockout.

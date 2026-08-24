@@ -25,9 +25,20 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-API_ID = int(os.environ["TG_API_ID"])
-API_HASH = os.environ["TG_API_HASH"]
-SESSION_NAME = os.environ.get("TG_SESSION_NAME", "session_name")
+# Load lazily and fail softly at import time — callers check is_configured()
+# instead of getting a KeyError traceback that could leak env names.
+def _parse_api_id(raw: str | None) -> int | None:
+    if not raw:
+        return None
+    try:
+        return int(raw.strip())
+    except ValueError:
+        print("[WARN] TG_API_ID is not a valid integer — Telegram is not configured")
+        return None
+
+API_ID: int | None = _parse_api_id(os.getenv("TG_API_ID"))
+API_HASH: str | None = (os.getenv("TG_API_HASH") or "").strip() or None
+SESSION_NAME: str = (os.getenv("TG_SESSION_NAME") or "session").strip()
 
 # Stay safely under Telegram's ~2GB single-message file ceiling.
 CHUNK_SIZE_BYTES = int(os.environ.get("CHUNK_SIZE_BYTES", 1_900_000_000))  # 1.9 GB
@@ -37,12 +48,14 @@ CONCURRENT_CHUNKS = int(os.environ.get("CONCURRENT_CHUNKS", 1))
 
 
 def is_configured() -> bool:
-    """Check if Telegram credentials are set."""
+    """Check if Telegram credentials are present (never log the hash)."""
     return bool(API_ID and API_HASH and SESSION_NAME)
 
 
 def _make_client() -> TelegramClient:
     """Create a fresh Telethon client (session file caches auth state)."""
+    if not is_configured():
+        raise RuntimeError("Telegram not configured — set TG_API_ID and TG_API_HASH in .env")
     return TelegramClient(SESSION_NAME, API_ID, API_HASH)
 
 
