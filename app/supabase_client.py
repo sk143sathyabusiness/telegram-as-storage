@@ -15,6 +15,8 @@ _supabase: Client | None = None
 def get_supabase() -> Client:
     global _supabase
     if _supabase is None:
+        if not SUPABASE_URL or not SUPABASE_KEY:
+            raise RuntimeError("Supabase not configured — set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Vercel env (and .env for local)")
         _supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
     return _supabase
 

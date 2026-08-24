@@ -69,7 +69,16 @@ def _make_client() -> TelegramClient:
             return TelegramClient(StringSession(TG_SESSION_STRING), API_ID, API_HASH)
         except Exception as e:
             print(f"[WARN] TG_SESSION_STRING invalid, falling back to file session: {e}")
-    return TelegramClient(SESSION_NAME, API_ID, API_HASH)
+    try:
+        return TelegramClient(SESSION_NAME, API_ID, API_HASH)
+    except Exception as e:
+        # Vercel's /var/task is read-only — SQLite session open fails with "unable to open database file"
+        if "unable to open database file" in str(e).lower() or "readonly" in str(e).lower():
+            raise RuntimeError(
+                "Telegram session file cannot be opened on Vercel (read-only filesystem). "
+                "Set TG_SESSION_STRING env var from your local session.session via StringSession and redeploy."
+            ) from e
+        raise
 
 
 def _sha256_bytes(data: bytes) -> str:

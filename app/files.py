@@ -180,14 +180,20 @@ def api_files_upload():
         import traceback; traceback.print_exc()
         msg = str(e)
         # Telethon session missing is the #1 cause on Vercel (ephemeral FS)
-        return jsonify({"error": msg}), 503
+        return jsonify({"error": msg, "type": type(e).__name__}), 503
     except Exception as e:
         import traceback; traceback.print_exc()
         # Surface detail even in production for Vercel debugging (sanitized, no keys)
-        detail = str(e)[:300]
-        # Avoid leaking long trace with secrets — just first line
-        detail = detail.split("\n")[0][:300]
-        return jsonify({"error": f"Storage failed. {detail}"}), 500
+        detail = str(e)[:400]
+        detail = detail.split("\n")[0][:400]
+        # Detect Vercel SQLite session issue even when raised as OperationalError
+        if "unable to open database file" in detail.lower():
+            return jsonify({
+                "error": "Telegram session file cannot be opened on Vercel (read-only filesystem). Set TG_SESSION_STRING env var from your local session.session and redeploy.",
+                "type": type(e).__name__,
+                "hint": "Generate StringSession: py -c \"from telethon.sessions import StringSession; print(StringSession.save(StringSession.load(open('session.session','rb').read())))\" then vercel env add TG_SESSION_STRING"
+            }), 503
+        return jsonify({"error": f"Storage failed. {type(e).__name__}: {detail}"}), 500
     print(f"[UPLOAD] Stored to Telegram. message_ids={message_ids}, size={size_bytes}")
     # Find existing file by name + folder
     existing_query = sup.table("files").select("id").eq("org_id", user["org_id"]).eq("name", filename).eq("is_deleted", False)
