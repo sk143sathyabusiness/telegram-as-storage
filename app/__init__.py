@@ -21,6 +21,7 @@ _BLOCKED_STATIC = {
     ".gitignore",
     "app.py",
     "telegram_bot.py",
+    "telegram_service.py",
     "supabase_schema.sql",
     "requirements.txt",
 }
@@ -50,6 +51,10 @@ def create_app() -> Flask:
     from app.folders import folders_bp
     app.register_blueprint(orgs_bp)
     app.register_blueprint(folders_bp)
+
+    # Task 4 blueprints
+    from app.files import files_bp
+    app.register_blueprint(files_bp)
 
     # ── Minimal routes required for Task 1 tests ──────────────────────
 
