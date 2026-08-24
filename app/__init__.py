@@ -56,6 +56,12 @@ def create_app() -> Flask:
     from app.files import files_bp
     app.register_blueprint(files_bp)
 
+    # Task 5 blueprints
+    from app.versions import versions_bp
+    from app.trash import trash_bp
+    app.register_blueprint(versions_bp)
+    app.register_blueprint(trash_bp)
+
     # ── Minimal routes required for Task 1 tests ──────────────────────
 
     @app.route("/")
