@@ -60,7 +60,7 @@ def _login_rate_limit_register_success(key: str):
 def api_me():
     from app.security import current_user
     user = current_user()
-    return jsonify({"id": user["id"], "username": user["username"], "role": user["role"]})
+    return jsonify({"id": user["id"], "username": user["username"], "role": user["role"], "org_id": user["org_id"]})
 
 
 @auth_bp.route("/api/login", methods=["POST"])
@@ -107,7 +107,7 @@ def api_login():
         "actor_role": user["role"],
         "action": "login",
     }).execute()
-    return jsonify({"id": user["id"], "username": user["username"], "role": user["role"]})
+    return jsonify({"id": user["id"], "username": user["username"], "role": user["role"], "org_id": user["org_id"]})
 
 
 @auth_bp.route("/api/logout", methods=["POST"])

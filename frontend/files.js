@@ -1,7 +1,21 @@
 // frontend/files.js — file list, drag/drop, folder-upload, progress ETA, preview/edit, versions/trash
 import { API, state, toast, fmt, fmtDate, fmtSpeed, escapeHtml, openModal, closeModal, hideSkeleton, showSkeleton, revealOnScroll } from "./api.js";
 
-// ── ENCRYPTION ──────────────────────────────────────────────────────────────
+// ── ENCRYPTION (behind the screen) ──────────────────────────────────────
+// Auto-derived per-org passphrase so users never enter it manually.
+// Uses org_id from state.currentUser (returned by /api/login and /api/me) —
+// all members of the same org share the same key, no UI prompt, still AES-256-GCM.
+export function getAutoPassphrase() {
+  const orgId = state.currentUser?.org_id || state.currentUser?.orgId || localStorage.getItem("tv_org_id") || "";
+  if (orgId) return `tv-auto-${orgId}`;
+  // fallback before login — use a stable device key so code never prompts
+  let dev = localStorage.getItem("tv_device_key");
+  if (!dev) {
+    dev = Array.from(crypto.getRandomValues(new Uint8Array(16))).map(b=>b.toString(16).padStart(2,"0")).join("");
+    localStorage.setItem("tv_device_key", dev);
+  }
+  return `tv-auto-device-${dev}`;
+}
 export async function deriveKey(passphrase) {
   const enc = new TextEncoder();
   const km = await crypto.subtle.importKey("raw", enc.encode(passphrase), "PBKDF2", false, ["deriveKey"]);
@@ -27,8 +41,7 @@ export async function sha256Hex(blob) {
 
 // ── UPLOAD ──────────────────────────────────────────────────────────────────
 export async function uploadFiles(triggerEl) {
-  const passphrase = document.getElementById("team-key")?.value;
-  if (!passphrase) { toast("Enter team passphrase first", "err"); return; }
+  const passphrase = getAutoPassphrase();
 
   const fileInput = document.getElementById("file-input");
   const folderInput = document.getElementById("folder-input");
@@ -234,8 +247,7 @@ export async function refreshFiles() {
 }
 
 export async function downloadFile(fileId, filename) {
-  const passphrase = document.getElementById("team-key").value;
-  if (!passphrase) { toast("Enter team passphrase first", "err"); return; }
+  const passphrase = getAutoPassphrase();
 
   const toastEl = document.getElementById("toast");
   toastEl.className = "toast show";
@@ -271,7 +283,7 @@ export async function downloadFile(fileId, filename) {
   try {
     plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct.slice(12));
   } catch {
-    toast("Decryption failed — wrong passphrase?", "err"); return;
+    toast("Decryption failed", "err"); return;
   }
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([plain]));
@@ -451,12 +463,8 @@ function loadPreviewAsBlob(container, htmlTemplate) {
 }
 
 function loadPreviewAsText(container, ext) {
-  const passphrase = document.getElementById("team-key").value;
-  if (!passphrase) {
-    container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Enter the team passphrase to preview text files.</div>';
-    return;
-  }
-  container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Decrypting…</div>';
+  const passphrase = getAutoPassphrase();
+container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Decrypting…</div>';
   fetch(`${API}/files/${_previewFileId}/preview`).then(r => {
     if (!r.ok) throw new Error("Preview failed");
     return r.arrayBuffer();
@@ -466,7 +474,7 @@ function loadPreviewAsText(container, ext) {
     const key = await deriveKey(passphrase);
     let plain;
     try { plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct.slice(12)); }
-    catch { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Decryption failed — wrong passphrase?</div>'; return; }
+    catch { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Decryption failed</div>'; return; }
     const text = new TextDecoder().decode(plain);
     container.innerHTML = `<pre style="margin:0;padding:16px;font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:break-word;color:var(--text);overflow:auto;max-height:65vh">${escapeHtml(text)}</pre>`;
   }).catch(err => {
@@ -475,9 +483,8 @@ function loadPreviewAsText(container, ext) {
 }
 
 async function loadDocxPreview(container) {
-  const passphrase = document.getElementById("team-key").value;
-  if (!passphrase) { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Enter the team passphrase to preview Word documents.</div>'; return; }
-  if (typeof mammoth === "undefined") { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Word viewer library not loaded. Check your internet connection.</div>'; return; }
+  const passphrase = getAutoPassphrase();
+if (typeof mammoth === "undefined") { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Word viewer library not loaded. Check your internet connection.</div>'; return; }
   container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Decrypting and rendering Word document…</div>';
   try {
     const r = await fetch(`${API}/files/${_previewFileId}/preview`);
@@ -485,7 +492,7 @@ async function loadDocxPreview(container) {
     const buf = await r.arrayBuffer();
     const ct = new Uint8Array(buf); const iv = ct.slice(0, 12);
     const key = await deriveKey(passphrase);
-    let plain; try { plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct.slice(12)); } catch { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Decryption failed — wrong passphrase?</div>'; return; }
+    let plain; try { plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct.slice(12)); } catch { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Decryption failed</div>'; return; }
     const result = await mammoth.convertToHtml({arrayBuffer: plain});
     const html = result.value || '<p style="color:var(--muted)">Document is empty.</p>';
     const warnings = result.messages.filter(m => m.type === "warning");
@@ -496,9 +503,8 @@ async function loadDocxPreview(container) {
 }
 
 async function loadXlsxPreview(container) {
-  const passphrase = document.getElementById("team-key").value;
-  if (!passphrase) { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Enter the team passphrase to preview Excel spreadsheets.</div>'; return; }
-  if (typeof XLSX === "undefined") { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Excel viewer library not loaded. Check your internet connection.</div>'; return; }
+  const passphrase = getAutoPassphrase();
+if (typeof XLSX === "undefined") { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Excel viewer library not loaded. Check your internet connection.</div>'; return; }
   container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Decrypting and rendering spreadsheet…</div>';
   try {
     const r = await fetch(`${API}/files/${_previewFileId}/preview`);
@@ -506,7 +512,7 @@ async function loadXlsxPreview(container) {
     const buf = await r.arrayBuffer();
     const ct = new Uint8Array(buf); const iv = ct.slice(0, 12);
     const key = await deriveKey(passphrase);
-    let plain; try { plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct.slice(12)); } catch { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Decryption failed — wrong passphrase?</div>'; return; }
+    let plain; try { plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct.slice(12)); } catch { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Decryption failed</div>'; return; }
     const workbook = XLSX.read(plain, {type: "array"});
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
@@ -524,9 +530,8 @@ async function loadXlsxPreview(container) {
 }
 
 async function loadPptxPreview(container) {
-  const passphrase = document.getElementById("team-key").value;
-  if (!passphrase) { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Enter the team passphrase to preview PowerPoint presentations.</div>'; return; }
-  if (typeof JSZip === "undefined") { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">PPT viewer library not loaded. Check your internet connection.</div>'; return; }
+  const passphrase = getAutoPassphrase();
+if (typeof JSZip === "undefined") { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">PPT viewer library not loaded. Check your internet connection.</div>'; return; }
   container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Decrypting and rendering presentation…</div>';
   try {
     const r = await fetch(`${API}/files/${_previewFileId}/preview`);
@@ -534,7 +539,7 @@ async function loadPptxPreview(container) {
     const buf = await r.arrayBuffer();
     const ct = new Uint8Array(buf); const iv = ct.slice(0, 12);
     const key = await deriveKey(passphrase);
-    let plain; try { plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct.slice(12)); } catch { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Decryption failed — wrong passphrase?</div>'; return; }
+    let plain; try { plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct.slice(12)); } catch { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Decryption failed</div>'; return; }
     const zip = await JSZip.loadAsync(plain);
     const slideFiles = [];
     zip.forEach((path, file) => { if (path.match(/^ppt\/slides\/slide\d+\.xml$/) && !path.endsWith("/")) slideFiles.push({path, file}); });
@@ -592,9 +597,8 @@ export function editFile(fileId, filename, sizeBytes) {
 }
 
 async function loadFileForEdit(fileId) {
-  const passphrase = document.getElementById("team-key").value;
-  if (!passphrase) { document.getElementById("edit-textarea").value = "Enter the team passphrase to edit text files."; return; }
-  try {
+  const passphrase = getAutoPassphrase();
+try {
     const r = await fetch(`${API}/files/${fileId}/preview`);
     if (!r.ok) throw new Error("Failed to load");
     const buf = await r.arrayBuffer();
@@ -607,9 +611,8 @@ async function loadFileForEdit(fileId) {
 
 export async function saveEdit() {
   if (!_editFileId) return;
-  const passphrase = document.getElementById("team-key").value;
-  if (!passphrase) { toast("Enter the team passphrase first", "err"); return; }
-  const text = document.getElementById("edit-textarea").value;
+  const passphrase = getAutoPassphrase();
+const text = document.getElementById("edit-textarea").value;
   const plainBuf = new TextEncoder().encode(text);
   const key = await deriveKey(passphrase);
   const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -628,15 +631,14 @@ export function downloadEditFile() { if (_editFileId && _editFileName) downloadF
 
 let _editDocxBlob = null;
 async function loadDocxForEdit(fileId) {
-  const passphrase = document.getElementById("team-key").value;
-  if (!passphrase) { document.getElementById("edit-rich-content").innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Enter the team passphrase to edit Word documents.</div>'; return; }
-  if (typeof mammoth === "undefined") { document.getElementById("edit-rich-content").innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Word editor library not loaded.</div>'; return; }
+  const passphrase = getAutoPassphrase();
+if (typeof mammoth === "undefined") { document.getElementById("edit-rich-content").innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Word editor library not loaded.</div>'; return; }
   try {
     const r = await fetch(`${API}/files/${fileId}/preview`);
     if (!r.ok) throw new Error("Failed to load");
     const buf = await r.arrayBuffer(); const ct = new Uint8Array(buf); const iv = ct.slice(0, 12);
     const key = await deriveKey(passphrase);
-    let plain; try { plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct.slice(12)); } catch { document.getElementById("edit-rich-content").innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Decryption failed — wrong passphrase?</div>'; return; }
+    let plain; try { plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct.slice(12)); } catch { document.getElementById("edit-rich-content").innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Decryption failed</div>'; return; }
     _editDocxBlob = new Blob([plain]);
     const result = await mammoth.convertToHtml({arrayBuffer: plain});
     const html = result.value || "";
@@ -652,9 +654,8 @@ export function richCmd(cmd, val) { document.execCommand(cmd, false, val || null
 
 export async function saveEditRich() {
   if (!_editFileId) return;
-  const passphrase = document.getElementById("team-key").value;
-  if (!passphrase) { toast("Enter the team passphrase first", "err"); return; }
-  const html = document.getElementById("edit-rich-editor").innerHTML;
+  const passphrase = getAutoPassphrase();
+const html = document.getElementById("edit-rich-editor").innerHTML;
   const plainBuf = new TextEncoder().encode(html);
   const key = await deriveKey(passphrase);
   const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -701,7 +702,6 @@ document.addEventListener("keydown", e => {
     case "4": if (state.currentUser?.role === "org_admin" || state.currentUser?.role === "master_admin") window.showView?.("users"); break;
     case "5": if (state.currentUser?.role === "org_admin" || state.currentUser?.role === "master_admin") window.showView?.("versions-all"); break;
     case "6": if (state.currentUser?.role === "org_admin" || state.currentUser?.role === "master_admin") window.showView?.("backup"); break;
-    case "/": e.preventDefault(); document.getElementById("team-key")?.focus(); break;
   }
 });
 

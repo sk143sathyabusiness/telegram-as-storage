@@ -98,6 +98,7 @@ export async function doLogin() {
     state.currentUser = await r.json();
     // Sync window.currentUser for legacy code that reads global
     window.currentUser = state.currentUser;
+    if (state.currentUser.org_id) localStorage.setItem("tv_org_id", state.currentUser.org_id);
     document.getElementById("login-screen").style.display = "none";
     document.getElementById("app").classList.add("visible");
     document.getElementById("topbar-user").textContent = state.currentUser.username;
@@ -142,6 +143,7 @@ export async function sessionLogin() {
   if (r.ok) {
     state.currentUser = await r.json();
     window.currentUser = state.currentUser;
+    if (state.currentUser.org_id) localStorage.setItem("tv_org_id", state.currentUser.org_id);
     _sessionModalShown = false;
     window.closeModal("session-modal");
     toast("Welcome back — session restored");
@@ -167,6 +169,7 @@ fetch(API + "/me").then(async r => {
   if (r.ok) {
     state.currentUser = await r.json();
     window.currentUser = state.currentUser;
+    if (state.currentUser.org_id) localStorage.setItem("tv_org_id", state.currentUser.org_id);
     const loginScreen = document.getElementById("login-screen");
     if (loginScreen) loginScreen.style.display = "none";
     document.getElementById("app")?.classList.add("visible");
