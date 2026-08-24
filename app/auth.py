@@ -113,4 +113,22 @@ def api_login():
 @auth_bp.route("/api/logout", methods=["POST"])
 def api_logout():
     session.clear()
-    return jsonify({"ok": True})
+    # Explicitly expire the session cookie (Flask's clear() alone may leave a fresh empty cookie)
+    from flask import current_app, make_response
+    resp = make_response(jsonify({"ok": True}))
+    # Use same attributes as register_security sets so browser actually deletes it
+    secure = current_app.config.get("SESSION_COOKIE_SECURE", False)
+    resp.delete_cookie(
+        current_app.config.get("SESSION_COOKIE_NAME", "session"),
+        path=current_app.config.get("SESSION_COOKIE_PATH", "/"),
+        secure=secure,
+        httponly=current_app.config.get("SESSION_COOKIE_HTTPONLY", True),
+        samesite=current_app.config.get("SESSION_COOKIE_SAMESITE", "Lax"),
+    )
+    # Also set an expired cookie for Vercel's edge cache variants
+    resp.set_cookie(
+        current_app.config.get("SESSION_COOKIE_NAME", "session"),
+        "", expires=0, max_age=0,
+        path="/", secure=secure, httponly=True, samesite="Lax"
+    )
+    return resp

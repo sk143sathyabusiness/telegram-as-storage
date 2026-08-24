@@ -66,9 +66,12 @@ function awaitImportModal() {
   }, { passive: true })
 );
 
-// ── FETCH 401 intercept ─────────────────────────────────────────────────────
+// ── FETCH 401 intercept — also ensure cookies are sent for same-origin API calls
 const _origFetch = window.fetch.bind(window);
 window.fetch = async function(url, opts) {
+  if (typeof url === "string" && url.includes("/api/")) {
+    opts = {...(opts||{}), credentials: opts?.credentials || "same-origin"};
+  }
   const res = await _origFetch(url, opts);
   if (res.status === 401 && !_sessionModalShown && !String(url).includes("/api/login") && !String(url).includes("/api/me")) {
     let expired = false;
@@ -92,6 +95,7 @@ export async function doLogin() {
   const password = document.getElementById("l-pass").value;
   const r = await fetch(API + "/login", {
     method: "POST", headers: {"Content-Type": "application/json"},
+    credentials: "same-origin",
     body: JSON.stringify({username, password})
   });
   if (r.ok) {
@@ -127,8 +131,31 @@ export async function doLogin() {
 }
 
 export async function logout() {
-  await fetch(API + "/logout", {method: "POST"});
-  location.reload();
+  try { await fetch(API + "/logout", {method: "POST", credentials: "same-origin"}); } catch {}
+  // Clear all client state without relying on reload cache
+  state.currentUser = null;
+  window.currentUser = null;
+  localStorage.removeItem("tv_org_id");
+  _sessionModalShown = false;
+  if (_sessionWarnTimer) { clearInterval(_sessionWarnTimer); _sessionWarnTimer = null; }
+  const el = document.getElementById("session-timer");
+  if (el) el.textContent = "";
+  document.getElementById("app")?.classList.remove("visible");
+  const loginScreen = document.getElementById("login-screen");
+  if (loginScreen) loginScreen.style.display = "";
+  document.getElementById("l-user").value = "";
+  document.getElementById("l-pass").value = "";
+  document.getElementById("topbar-user").textContent = "";
+  document.getElementById("topbar-role").textContent = "";
+  // Reset folder cache so next login reloads fresh
+  state.currentFolderId = null;
+  state.currentFolderName = "~";
+  state.folderMap = {};
+  // Use hard reload that bypasses cache as fallback, but already showing login
+  // location.reload() sometimes restores bfcache with old DOM — force navigation
+  window.location.hash = "";
+  // Small delay then reload to ensure cookie deletion propagated
+  setTimeout(() => location.reload(), 150);
 }
 
 export async function sessionLogin() {
@@ -138,6 +165,7 @@ export async function sessionLogin() {
   errEl.textContent = "";
   const r = await fetch(API + "/login", {
     method: "POST", headers: {"Content-Type": "application/json"},
+    credentials: "same-origin",
     body: JSON.stringify({username, password})
   });
   if (r.ok) {
@@ -165,7 +193,7 @@ document.addEventListener("keydown", e => {
 });
 
 // Auto-login via /me on page load (mirrors app.js bottom fetch)
-fetch(API + "/me").then(async r => {
+fetch(API + "/me", {credentials: "same-origin"}).then(async r => {
   if (r.ok) {
     state.currentUser = await r.json();
     window.currentUser = state.currentUser;
