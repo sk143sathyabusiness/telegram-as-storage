@@ -45,6 +45,12 @@ def create_app() -> Flask:
     from app.auth import auth_bp
     app.register_blueprint(auth_bp)
 
+    # Task 3 blueprints
+    from app.orgs import orgs_bp
+    from app.folders import folders_bp
+    app.register_blueprint(orgs_bp)
+    app.register_blueprint(folders_bp)
+
     # ── Minimal routes required for Task 1 tests ──────────────────────
 
     @app.route("/")
