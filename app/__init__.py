@@ -41,6 +41,10 @@ def create_app() -> Flask:
     # Security: cookies, headers, error handlers, timeout, UUID converter
     register_security(app)
 
+    # Task 2 blueprints
+    from app.auth import auth_bp
+    app.register_blueprint(auth_bp)
+
     # ── Minimal routes required for Task 1 tests ──────────────────────
 
     @app.route("/")

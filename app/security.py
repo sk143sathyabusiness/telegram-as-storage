@@ -9,6 +9,7 @@ register_security(app) for the factory.
 import os
 import uuid as uuid_lib
 from datetime import datetime
+from functools import wraps
 
 from flask import Flask, jsonify, request, session
 from werkzeug.routing import BaseConverter
@@ -34,6 +35,28 @@ class UUIDConverter(BaseConverter):
 
     def to_url(self, value):
         return str(value)
+
+
+# ── Auth helpers (moved from app.py:168-180) ─────────────────────────────
+
+def login_required(f):
+    @wraps(f)
+    def wrapped(*args, **kwargs):
+        if "user_id" not in session:
+            return jsonify({"error": "unauthorized"}), 401
+        return f(*args, **kwargs)
+    return wrapped
+
+
+def current_user():
+    if "user_id" not in session:
+        return None
+    return {
+        "id": session["user_id"],
+        "org_id": session["org_id"],
+        "role": session["role"],
+        "username": session.get("username"),
+    }
 
 
 # ── Security headers (after_request) ────────────────────────────────────
@@ -67,7 +90,22 @@ def _enforce_session_timeout():
         return
     # Whitelist endpoints that must work even on a (possibly) expired session.
     rule = request.endpoint or ""
+    # Support both bare names (legacy app.py) and blueprint-prefixed names (auth.api_login)
+    bare = rule.split(".")[-1] if rule else ""
     if rule in (
+        "api_login",
+        "api_logout",
+        "static_files",
+        "index",
+        "register_page",
+        "shared_page",
+        "favicon",
+        "api_shared_download",
+        "api_shared_info",
+        "api_shared_preview",
+        "auth.api_login",
+        "auth.api_logout",
+    ) or bare in (
         "api_login",
         "api_logout",
         "static_files",

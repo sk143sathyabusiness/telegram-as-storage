@@ -67,3 +67,19 @@ else:
             pass
         SECRET_KEY = key
         print("[INFO] Generated new .secret_key (store securely; overrides FLASK_SECRET_KEY if file exists).")
+
+# ── Share-link password salt ────────────────────────────────────────────
+# PBKDF2 salt for hash_share_password. Falls back to built-in static value
+# when ENCRYPTION_VERIFIER_SALT is not set (legacy links). We also keep the
+# static value exported so verify_share_password can try both.
+_SHARE_PW_SALT_STATIC = b"teamvault-share-v1"
+_raw_share_salt = (os.getenv("ENCRYPTION_VERIFIER_SALT") or "").strip()
+if _raw_share_salt:
+    if len(_raw_share_salt) < 16:
+        print("[WARN] ENCRYPTION_VERIFIER_SALT is too short — use at least 16 random characters and do not reuse FLASK_SECRET_KEY.")
+    _SHARE_PW_SALT = _raw_share_salt.encode()
+    if _raw_share_salt == (os.getenv("FLASK_SECRET_KEY") or os.getenv("SECRET_KEY") or ""):
+        print("[WARN] ENCRYPTION_VERIFIER_SALT == FLASK_SECRET_KEY — use distinct random values.")
+else:
+    _SHARE_PW_SALT = _SHARE_PW_SALT_STATIC
+    print("[INFO] ENCRYPTION_VERIFIER_SALT not set — using built-in salt. Set a unique value in .env for stronger isolation.")
