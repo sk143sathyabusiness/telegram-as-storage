@@ -16,8 +16,12 @@ export function shareFile(fileId, filename) {
 }
 
 export async function loadExistingShares(fileId) {
-  const r = await fetch(`${API}/files/${fileId}/shares`);
-  if (!r.ok) return;
+  const r = await fetch(`${API}/files/${fileId}/shares`, {credentials: "same-origin"});
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    if (r.status !== 401) toast(d.error || "Failed to load links", "err");
+    return;
+  }
   const shares = await r.json();
   const container = document.getElementById("share-existing-links");
   container.innerHTML = "";
@@ -41,24 +45,37 @@ export async function loadExistingShares(fileId) {
 
 export async function createShareLink() {
   if (!_shareFileId) return;
-  const days = document.getElementById("share-expiry").value;
+  const daysEl = document.getElementById("share-expiry");
+  let days = parseInt(daysEl.value, 10);
+  if (isNaN(days) || days < 1) days = 7;
+  if (days > 365) days = 365;
+  daysEl.value = days;
   const password = document.getElementById("share-password").value;
-  const r = await fetch(`${API}/files/${_shareFileId}/share`, {
-    method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({expires_days: parseInt(days) || 7, password})
-  });
-  if (r.ok) {
-    const d = await r.json();
-    const url = `${window.location.origin}/shared/${d.token}`;
-    document.getElementById("share-link-input").value = url;
-    document.getElementById("share-expires").textContent = d.expires_at ? fmtDate(d.expires_at) : "never";
-    const dl = document.getElementById("share-downloads");
-    if (dl) dl.textContent = "0";
-    toast("Share link created");
-    loadExistingShares(_shareFileId);
-  } else {
-    const d = await r.json();
-    toast(d.error || "Failed to create link", "err");
+  if (password && password.length > 128) { toast("Password too long (max 128)", "err"); return; }
+  const btn = document.querySelector("#share-modal .btn-primary");
+  if (btn) { btn.disabled = true; btn.textContent = "Creating…"; }
+  try {
+    const r = await fetch(`${API}/files/${_shareFileId}/share`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      credentials: "same-origin",
+      body: JSON.stringify({expires_days: days, password})
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok && d.token) {
+      const url = `${window.location.origin}/shared/${d.token}`;
+      document.getElementById("share-link-input").value = url;
+      document.getElementById("share-expires").textContent = d.expires_at ? fmtDate(d.expires_at) : "never";
+      const dl = document.getElementById("share-downloads");
+      if (dl) dl.textContent = "0";
+      toast("Share link created");
+      loadExistingShares(_shareFileId);
+    } else {
+      toast(d.error || `Failed to create link (HTTP ${r.status})`, "err");
+    }
+  } catch (e) {
+    toast("Network error creating link", "err");
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Generate Link"; }
   }
 }
 
@@ -73,8 +90,9 @@ export function copyShareLink() {
 }
 
 export async function deleteShare(shareId, fileId) {
-  const r = await fetch(`${API}/files/${fileId}/shares/${shareId}`, {method: "DELETE"});
+  const r = await fetch(`${API}/files/${fileId}/shares/${shareId}`, {method: "DELETE", credentials: "same-origin"});
   if (r.ok) { loadExistingShares(fileId); toast("Link removed"); }
+  else { const d = await r.json().catch(()=>({})); toast(d.error||"Failed to remove link","err"); }
 }
 
 // ── EMAIL SHARING ───────────────────────────────────────────────────────────
@@ -98,6 +116,7 @@ export async function sendEmail(event) {
   if (btn) { btn.disabled = true; btn.textContent = "Sending…"; }
   const r = await fetch(`${API}/files/${_emailFileId}/email`, {
     method: "POST", headers: {"Content-Type": "application/json"},
+    credentials: "same-origin",
     body: JSON.stringify({recipients, message})
   });
   if (btn) { btn.disabled = false; btn.textContent = "Send"; }

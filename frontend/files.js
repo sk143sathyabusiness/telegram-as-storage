@@ -1,5 +1,5 @@
 // frontend/files.js — file list, drag/drop, folder-upload, progress ETA, preview/edit, versions/trash
-import { API, state, toast, fmt, fmtDate, fmtSpeed, escapeHtml, openModal, closeModal, hideSkeleton, showSkeleton, revealOnScroll } from "./api.js";
+import { API, state, toast, fmt, fmtDate, fmtSpeed, escapeHtml, openModal, closeModal, hideSkeleton, showSkeleton, revealOnScroll, getPreviewBlobUrl, setPreviewBlobUrl } from "./api.js";
 
 // ── ENCRYPTION (behind the screen) ──────────────────────────────────────
 // Auto-derived per-org passphrase so users never enter it manually.
@@ -413,7 +413,6 @@ export async function hardDelete(fileId) {
 // ── PREVIEW / EDIT (kept in files.js per drag/drop ownership) ───────────────
 let _previewFileId = null;
 let _previewFilename = "";
-let _previewBlobUrl = null;
 
 export function previewFile(fileId, filename, sizeBytes) {
   _previewFileId = fileId;
@@ -452,16 +451,46 @@ export function previewFile(fileId, filename, sizeBytes) {
   }
 }
 
+function getMimeForExt(ext) {
+  const map = { png:"image/png", jpg:"image/jpeg", jpeg:"image/jpeg", gif:"image/gif", svg:"image/svg+xml", webp:"image/webp", bmp:"image/bmp", pdf:"application/pdf", mp4:"video/mp4", webm:"video/webm", mp3:"audio/mpeg", wav:"audio/wav", ogg:"audio/ogg" };
+  return map[ext] || "application/octet-stream";
+}
 function loadPreviewAsBlob(container, htmlTemplate) {
-  fetch(`${API}/files/${_previewFileId}/preview`).then(r => {
+  const passphrase = getAutoPassphrase();
+  container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Decrypting…</div>';
+  fetch(`${API}/files/${_previewFileId}/preview`, {credentials:"same-origin"}).then(r => {
     if (!r.ok) throw new Error("Preview failed");
-    return r.blob();
-  }).then(blob => {
-    if (_previewBlobUrl) URL.revokeObjectURL(_previewBlobUrl);
-    _previewBlobUrl = URL.createObjectURL(blob);
+    return r.arrayBuffer();
+  }).then(async buf => {
+    const ct = new Uint8Array(buf);
+    const iv = ct.slice(0, 12);
+    const key = await deriveKey(passphrase);
+    let plain;
+    try { plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct.slice(12)); }
+    catch { container.innerHTML = `<div style="text-align:center;padding:40px;color:var(--danger)">Decryption failed</div>`; return; }
+    const ext = _previewFilename.split(".").pop().toLowerCase();
+    const mime = getMimeForExt(ext);
+    const blob = new Blob([plain], {type: mime});
+    const prev = getPreviewBlobUrl();
+    if (prev) URL.revokeObjectURL(prev);
+    const url = URL.createObjectURL(blob);
+    setPreviewBlobUrl(url);
     container.innerHTML = htmlTemplate;
-    const el = container.firstElementChild;
-    el.src = _previewBlobUrl;
+    // htmlTemplate may be <img>, <iframe>, <video><source>, or audio wrapper — find correct media element
+    let el = container.querySelector("img, iframe, video, audio");
+    if (!el) el = container.firstElementChild;
+    if (el.tagName === "VIDEO" || el.tagName === "AUDIO") {
+      const srcEl = el.querySelector("source");
+      if (srcEl) { srcEl.src = url; el.load(); }
+      else el.src = url;
+    } else if (el.tagName === "DIV") {
+      // audio wrapper case: <div><audio><source>
+      const audio = el.querySelector("audio");
+      if (audio) { const srcEl = audio.querySelector("source"); if (srcEl) srcEl.src = url; else audio.src = url; audio.load(); }
+      else el.textContent = "Preview ready";
+    } else {
+      el.src = url;
+    }
   }).catch(err => {
     container.innerHTML = `<div style="text-align:center;padding:40px;color:var(--danger)">Preview failed: ${escapeHtml(err.message)}</div>`;
   });

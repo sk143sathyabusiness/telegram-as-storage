@@ -51,8 +51,9 @@
 </div>
 
 <script>
-const token = location.pathname.split("/shared/")[1] || "";
+const token = decodeURIComponent((location.pathname.split("/shared/")[1] || "").split("/")[0].split("?")[0].trim());
 const content = document.getElementById("content");
+if (!token) { document.getElementById("content").innerHTML = '<div class="shared-expired">🔒</div><div class="shared-name">Invalid link</div><div class="shared-meta">Missing token.</div>'; }
 
 async function loadInfo() {
   try {
@@ -85,6 +86,15 @@ function showPasswordPrompt(d) {
   const go = () => showDownload(d, pw.value);
   document.getElementById("submit").onclick = go;
   pw.addEventListener("keydown", e => { if (e.key === "Enter") go(); });
+  // rebind eye toggle for dynamically injected pw
+  content.querySelectorAll(".pw-toggle[data-target]").forEach(btn => {
+    btn.onclick = () => {
+      const input = document.getElementById(btn.dataset.target);
+      if (!input) return;
+      if (input.type === "password") { input.type = "text"; btn.textContent = "🙈"; }
+      else { input.type = "password"; btn.textContent = "👁️"; }
+    };
+  });
 }
 
 async function showDownload(d, password) {

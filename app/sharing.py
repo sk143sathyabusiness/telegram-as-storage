@@ -50,13 +50,21 @@ def api_files_share(file_id):
     if not perm or perm == "read_only":
         return jsonify({"error": "Permission denied"}), 403
     data = request.get_json(force=True) if request.data else {}
-    expires_days = data.get("expires_days", 7)
+    try:
+        expires_days = int(data.get("expires_days", 7))
+    except (ValueError, TypeError):
+        expires_days = 7
+    # Clamp to 1-365, default 7
+    if expires_days < 1 or expires_days > 365:
+        expires_days = 7
     password = data.get("password", "")
+    if password and len(password) > 128:
+        return jsonify({"error": "Password too long"}), 400
     token = secrets.token_urlsafe(24)
     expires_at = None
     if expires_days:
         from datetime import timedelta
-        expires_at = (datetime.utcnow() + timedelta(days=int(expires_days))).isoformat()
+        expires_at = (datetime.utcnow() + timedelta(days=expires_days)).isoformat()
     insert_data = {
         "file_id": str(file_id),
         "token": token,
@@ -65,7 +73,14 @@ def api_files_share(file_id):
     }
     if password:
         insert_data["password_hash"] = hash_share_password(password)
-    result = sup.table("shared_links").insert(insert_data).execute()
+    try:
+        result = sup.table("shared_links").insert(insert_data).execute()
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        detail = str(e).split("\n")[0][:300]
+        if "unable to open database file" in detail.lower():
+            return jsonify({"error": "Database unavailable on Vercel — check Supabase env"}), 503
+        return jsonify({"error": f"Failed to create link: {type(e).__name__}: {detail}"}), 500
     log_action("share_file", fdata["name"], f"folder={_resolve_folder_name(sup, fdata.get('folder_id'))} token={token[:8]}...")
     print(f"[SHARE] Created link for file '{fdata['name']}', token={token[:8]}...")
     return jsonify({"ok": True, "token": token, "expires_at": expires_at})

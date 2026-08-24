@@ -74,7 +74,9 @@ def _security_headers(resp):
         "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://vercel.live https://*.vercel.live; "
         "script-src-elem 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://vercel.live https://*.vercel.live; "
         "connect-src 'self' https://vercel.live https://*.vercel.live wss://vercel.live wss://*.vercel.live; "
-        "frame-src https://vercel.live https://*.vercel.live; "
+        "frame-src 'self' blob: https://vercel.live https://*.vercel.live; "
+        "media-src 'self' blob: https://vercel.live https://*.vercel.live; "
+        "object-src 'self' blob:; "
         "frame-ancestors 'none'; "
         "base-uri 'self'; "
         "form-action 'self'",
