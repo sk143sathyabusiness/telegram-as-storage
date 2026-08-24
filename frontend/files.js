@@ -83,14 +83,19 @@ export async function uploadFiles(triggerEl) {
         `${fmt(sentBytes)} / ${fmt(totalBytes)}  —  ETA ${eta}s`;
     })
   ));
-  results.forEach(r => r.status === "fulfilled" ? okCount++ : errCount++);
+  const errDetails = [];
+  results.forEach(r => {
+    if (r.status === "fulfilled") okCount++;
+    else { errCount++; if (r.reason?.message) errDetails.push(r.reason.message); console.error("[UPLOAD] failed:", r.reason.message); }
+  });
 
   area.classList.remove("visible");
   usedInput.value = "";
   refreshFiles();
   const msg = okCount ? `Uploaded ${okCount} file(s)` : "";
-  const errMsg = errCount ? `${errCount} failed` : "";
+  const errMsg = errCount ? `${errCount} failed${errDetails[0] ? ": " + errDetails[0].slice(0,180) : ""}` : "";
   toast([msg, errMsg].filter(Boolean).join(", "), errCount ? (okCount ? "ok" : "err") : "ok");
+  if (errDetails.length) console.error("[UPLOAD] details:", errDetails.join(" | "));
 }
 export const uploadFile = uploadFiles; // alias per brief
 
