@@ -178,6 +178,14 @@ function celebrate() {
   setTimeout(() => burst.remove(), 1000);
 }
 
+// Expose for type="module" (inline onclick="goStep(...)" handlers need window)
+if (typeof window !== "undefined") {
+  window.goStep = goStep;
+  window.selectPlan = selectPlan;
+  window.submitForm = submitForm;
+  window.validate = validate;
+}
+
 // Password eye toggle
 document.querySelectorAll('.password-toggle').forEach(toggle => {
   toggle.addEventListener('click', () => {
