@@ -181,6 +181,7 @@ def api_shared_info(token):
         "has_password": bool(link_data.get("password_hash")),
         "expires_at": link_data.get("expires_at"),
         "download_count": link_data.get("download_count", 0),
+        "org_id": fdata.get("org_id"),
     })
 
 

@@ -97,12 +97,27 @@ function showPasswordPrompt(d) {
   });
 }
 
+function getSharedPassphrase(orgId) {
+  if (orgId) return `tv-auto-${orgId}`;
+  return "tv-auto-device-fallback";
+}
+async function deriveKey(passphrase) {
+  const enc = new TextEncoder();
+  const km = await crypto.subtle.importKey("raw", enc.encode(passphrase), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({ name: "PBKDF2", salt: enc.encode("teamvault-fixed-salt"), iterations: 200000, hash: "SHA-256" }, km, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+}
+function getMime(ext) {
+  const m = { png:"image/png", jpg:"image/jpeg", jpeg:"image/jpeg", gif:"image/gif", svg:"image/svg+xml", webp:"image/webp", bmp:"image/bmp", pdf:"application/pdf", mp4:"video/mp4", webm:"video/webm", mp3:"audio/mpeg", wav:"audio/wav" };
+  return m[ext] || "application/octet-stream";
+}
 async function showDownload(d, password) {
   content.innerHTML = `
     <div class="shared-name">${escapeHtml(d.filename || "Shared file")}</div>
     <div class="shared-meta" id="meta">${fmtSize(d.size_bytes)} · preparing…</div>
     <div class="shared-spinner" id="spin"></div>
-    <div class="shared-state" id="prog" style="color:var(--accent)">Connecting…</div>`;
+    <div class="shared-state" id="prog" style="color:var(--accent)">Connecting…</div>
+    <div id="preview-area" style="display:none;margin-top:18px"></div>
+    <button class="btn-primary" id="dl-btn" style="display:none;width:100%;margin-top:12px">⬇ Download</button>`;
   try {
     const url = `/api/shared/${token}?password=${encodeURIComponent(password || "")}`;
     const r = await fetch(url);
@@ -113,16 +128,68 @@ async function showDownload(d, password) {
       }
       return showError();
     }
-    const blob = await downloadWithProgress(r, (pct, txt) => {
-      document.getElementById("spin").style.display = "none";
-      document.getElementById("prog").textContent = txt;
+    const prog = document.getElementById("prog");
+    const spin = document.getElementById("spin");
+    const meta = document.getElementById("meta");
+    const previewArea = document.getElementById("preview-area");
+    const dlBtn = document.getElementById("dl-btn");
+    // fetch ciphertext
+    const ctBlob = await downloadWithProgress(r, (pct, txt) => {
+      spin.style.display = "none";
+      prog.textContent = txt;
     });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = d.filename || "download";
-    a.click();
-    document.getElementById("prog").innerHTML = `<span class="shared-success-icon">✅</span><div style="margin-top:8px;color:var(--success)">Download started</div>`;
-  } catch { showError(); }
+    prog.textContent = "Decrypting…";
+    const ctBuf = await ctBlob.arrayBuffer();
+    const ct = new Uint8Array(ctBuf);
+    const iv = ct.slice(0, 12);
+    const passphrase = getSharedPassphrase(d.org_id);
+    let plain;
+    try {
+      const key = await deriveKey(passphrase);
+      plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct.slice(12));
+    } catch (e) {
+      prog.innerHTML = `<span style="color:var(--danger)">Decryption failed</span>`;
+      return;
+    }
+    const ext = (d.filename || "").split(".").pop().toLowerCase();
+    const mime = getMime(ext);
+    const blob = new Blob([plain], { type: mime });
+    const urlBlob = URL.createObjectURL(blob);
+    const isImage = ["png","jpg","jpeg","gif","svg","webp","bmp"].includes(ext);
+    const isPdf = ext === "pdf";
+    const isVideo = ["mp4","webm"].includes(ext);
+    const isAudio = ["mp3","wav","ogg"].includes(ext);
+    if (isImage) {
+      previewArea.style.display = "";
+      previewArea.innerHTML = `<img src="${urlBlob}" alt="${escapeHtml(d.filename)}" style="max-width:100%;max-height:50vh;border-radius:12px;display:block;margin:0 auto;box-shadow:var(--glass-shadow)">`;
+      meta.textContent = `${fmtSize(d.size_bytes)} · image preview`;
+    } else if (isPdf) {
+      previewArea.style.display = "";
+      previewArea.innerHTML = `<iframe src="${urlBlob}" style="width:100%;height:50vh;border:none;border-radius:12px;background:white"></iframe>`;
+      meta.textContent = `${fmtSize(d.size_bytes)} · PDF preview`;
+    } else if (isVideo) {
+      previewArea.style.display = "";
+      previewArea.innerHTML = `<video controls style="width:100%;max-height:50vh;border-radius:12px"><source src="${urlBlob}" type="${mime}"></video>`;
+      meta.textContent = `${fmtSize(d.size_bytes)} · video preview`;
+    } else if (isAudio) {
+      previewArea.style.display = "";
+      previewArea.innerHTML = `<audio controls style="width:100%"><source src="${urlBlob}" type="${mime}"></audio>`;
+      meta.textContent = `${fmtSize(d.size_bytes)} · audio preview`;
+    }
+    // download button
+    dlBtn.style.display = "";
+    dlBtn.onclick = () => {
+      const a = document.createElement("a");
+      a.href = urlBlob;
+      a.download = d.filename || "download";
+      a.click();
+    };
+    if (!isImage && !isPdf && !isVideo && !isAudio) {
+      // auto-download for non-previewable
+      dlBtn.click();
+    }
+    prog.innerHTML = `<span class="shared-success-icon">✅</span><div style="margin-top:8px;color:var(--success)">Ready — preview or download</div>`;
+  } catch (e) { console.error(e); showError(); }
 }
 
 function setErr(msg) {
