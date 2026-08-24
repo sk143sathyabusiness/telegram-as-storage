@@ -39,6 +39,9 @@ def _parse_api_id(raw: str | None) -> int | None:
 API_ID: int | None = _parse_api_id(os.getenv("TG_API_ID"))
 API_HASH: str | None = (os.getenv("TG_API_HASH") or "").strip() or None
 SESSION_NAME: str = (os.getenv("TG_SESSION_NAME") or "session").strip()
+# Vercel/serverless: no persistent .session file. Support StringSession via env.
+# Generate with: python -c "from telethon.sessions import StringSession; print(StringSession.load('session.session'))" or via Telethon docs
+TG_SESSION_STRING: str | None = (os.getenv("TG_SESSION_STRING") or "").strip() or None
 
 # Stay safely under Telegram's ~2GB single-message file ceiling.
 # Consumes app.config.CHUNK_SIZE_BYTES as single source of truth.
@@ -53,13 +56,19 @@ CONCURRENT_CHUNKS = int(os.environ.get("CONCURRENT_CHUNKS", 1))
 
 def is_configured() -> bool:
     """Check if Telegram credentials are present (never log the hash)."""
-    return bool(API_ID and API_HASH and SESSION_NAME)
+    return bool(API_ID and API_HASH and (SESSION_NAME or TG_SESSION_STRING))
 
 
 def _make_client() -> TelegramClient:
     """Create a fresh Telethon client (session file caches auth state)."""
     if not is_configured():
         raise RuntimeError("Telegram not configured — set TG_API_ID and TG_API_HASH in .env")
+    if TG_SESSION_STRING:
+        try:
+            from telethon.sessions import StringSession
+            return TelegramClient(StringSession(TG_SESSION_STRING), API_ID, API_HASH)
+        except Exception as e:
+            print(f"[WARN] TG_SESSION_STRING invalid, falling back to file session: {e}")
     return TelegramClient(SESSION_NAME, API_ID, API_HASH)
 
 

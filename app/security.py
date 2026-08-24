@@ -68,9 +68,9 @@ def _security_headers(resp):
     resp.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; "
-        "img-src 'self' data: blob:; "
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data: blob: https://vercel.live https://*.vercel.live; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://vercel.live https://*.vercel.live; "
+        "font-src 'self' https://fonts.gstatic.com https://vercel.live https://*.vercel.live data:; "
         "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://vercel.live https://*.vercel.live; "
         "script-src-elem 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://vercel.live https://*.vercel.live; "
         "connect-src 'self' https://vercel.live https://*.vercel.live wss://vercel.live wss://*.vercel.live; "

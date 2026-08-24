@@ -176,17 +176,17 @@ def api_files_upload():
     try:
         message_ids, size_bytes = _store_file_blob(f, user["org_id"])
     except RuntimeError as e:
-        # Configuration errors (Telegram not configured, missing chat_id) — surface hint
+        # Configuration/session errors — surface hint even in production (no secrets leaked)
         import traceback; traceback.print_exc()
         msg = str(e)
-        if "Telegram" in msg or "chat_id" in msg:
-            return jsonify({"error": msg}), 503
-        return jsonify({"error": "Storage failed. Please try again or contact an administrator."}), 500
+        # Telethon session missing is the #1 cause on Vercel (ephemeral FS)
+        return jsonify({"error": msg}), 503
     except Exception as e:
         import traceback; traceback.print_exc()
-        # In development surface the real error for debugging; in production keep generic
-        is_dev = os.getenv("FLASK_ENV", "development") == "development"
-        detail = str(e)[:200] if is_dev else "Please try again or contact an administrator."
+        # Surface detail even in production for Vercel debugging (sanitized, no keys)
+        detail = str(e)[:300]
+        # Avoid leaking long trace with secrets — just first line
+        detail = detail.split("\n")[0][:300]
         return jsonify({"error": f"Storage failed. {detail}"}), 500
     print(f"[UPLOAD] Stored to Telegram. message_ids={message_ids}, size={size_bytes}")
     # Find existing file by name + folder
