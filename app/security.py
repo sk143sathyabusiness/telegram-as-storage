@@ -71,8 +71,10 @@ def _security_headers(resp):
         "img-src 'self' data: blob:; "
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "font-src 'self' https://fonts.gstatic.com; "
-        "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; "
-        "connect-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://vercel.live https://*.vercel.live; "
+        "script-src-elem 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://vercel.live https://*.vercel.live; "
+        "connect-src 'self' https://vercel.live https://*.vercel.live wss://vercel.live wss://*.vercel.live; "
+        "frame-src https://vercel.live https://*.vercel.live; "
         "frame-ancestors 'none'; "
         "base-uri 'self'; "
         "form-action 'self'",

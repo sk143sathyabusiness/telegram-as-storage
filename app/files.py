@@ -175,9 +175,19 @@ def api_files_upload():
         return jsonify({"error": "Permission denied"}), 403
     try:
         message_ids, size_bytes = _store_file_blob(f, user["org_id"])
+    except RuntimeError as e:
+        # Configuration errors (Telegram not configured, missing chat_id) — surface hint
+        import traceback; traceback.print_exc()
+        msg = str(e)
+        if "Telegram" in msg or "chat_id" in msg:
+            return jsonify({"error": msg}), 503
+        return jsonify({"error": "Storage failed. Please try again or contact an administrator."}), 500
     except Exception as e:
         import traceback; traceback.print_exc()
-        return jsonify({"error": "Storage failed. Please try again or contact an administrator."}), 500
+        # In development surface the real error for debugging; in production keep generic
+        is_dev = os.getenv("FLASK_ENV", "development") == "development"
+        detail = str(e)[:200] if is_dev else "Please try again or contact an administrator."
+        return jsonify({"error": f"Storage failed. {detail}"}), 500
     print(f"[UPLOAD] Stored to Telegram. message_ids={message_ids}, size={size_bytes}")
     # Find existing file by name + folder
     existing_query = sup.table("files").select("id").eq("org_id", user["org_id"]).eq("name", filename).eq("is_deleted", False)
