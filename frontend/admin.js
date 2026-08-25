@@ -566,11 +566,20 @@ export async function loadOrgSettings() {
   if (!el) return;
   const orgsRes = await fetch(API + "/orgs", {credentials: "same-origin"});
   const orgs = orgsRes.ok ? await orgsRes.json() : [];
-  const org = Array.isArray(orgs) ? orgs.find(o => o.id === state.currentUser?.org_id) : (orgs.id ? orgs : null);
+  const myOrgId = state.currentUser?.org_id || localStorage.getItem("tv_org_id");
+  const org = Array.isArray(orgs) ? orgs.find(o => o.id === myOrgId) : (orgs.id ? orgs : null);
   const statsRes = await fetch(API + "/stats", {credentials: "same-origin"});
   const stats = statsRes.ok ? await statsRes.json() : {};
   const s = stats.org || stats.totals || {};
-  if (!org) { el.innerHTML = `<div style="color:var(--muted)">No organisation context.</div>`; return; }
+  if (!org) {
+    const isMaster = state.currentUser?.role === "master_admin";
+    el.innerHTML = `<div style="color:var(--muted)">${
+      isMaster
+        ? "Open an organisation first (Organisations → Open) to view its settings."
+        : "No organisation context."
+    }</div>`;
+    return;
+  }
   const used = s.storage_bytes || 0;
   const quota = s.storage_quota_bytes;
   let quotaBar = "";
