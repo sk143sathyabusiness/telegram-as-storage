@@ -390,6 +390,39 @@ def test_org_admin_cannot_set_other_org_backup_channel(monkeypatch):
         assert r.status_code == 403
 
 
+def test_backup_create_requires_telegram(monkeypatch):
+    from app import create_app, backups as backups_mod
+    app = create_app()
+    fake = _FakeSupabase()
+    oid = str(uuid.uuid4())
+    fake.store["_q_organizations"] = [{"id": oid, "name": "Acme", "backup_channel_id": "-1001"}]
+    monkeypatch.setattr(backups_mod, "get_supabase", lambda: fake)
+    monkeypatch.setattr(backups_mod, "log_action", lambda *a, **k: None)
+    monkeypatch.setattr(backups_mod.telegram_service, "is_configured", lambda: False)
+    with app.test_client() as c:
+        _login_session(c, role="org_admin", org_id=oid)
+        r = c.post("/api/backup/create", json={})
+        assert r.status_code == 400, r.get_json()
+        assert "Telegram is not configured" in r.get_json()["error"]
+
+
+def test_backup_create_success(monkeypatch):
+    from app import create_app, backups as backups_mod
+    app = create_app()
+    fake = _FakeSupabase()
+    oid = str(uuid.uuid4())
+    fake.store["_q_organizations"] = [{"id": oid, "name": "Acme", "backup_channel_id": "-1001"}]
+    monkeypatch.setattr(backups_mod, "get_supabase", lambda: fake)
+    monkeypatch.setattr(backups_mod, "log_action", lambda *a, **k: None)
+    monkeypatch.setattr(backups_mod.telegram_service, "is_configured", lambda: True)
+    monkeypatch.setattr(backups_mod.telegram_service, "upload_chunks", lambda *a, **k: [123])
+    with app.test_client() as c:
+        _login_session(c, role="org_admin", org_id=oid)
+        r = c.post("/api/backup/create", json={})
+        assert r.status_code == 200, r.get_json()
+        assert r.get_json()["ok"] is True
+
+
 def test_master_switch_context_clear(monkeypatch):
     from app import create_app, master as master_mod
     app = create_app()

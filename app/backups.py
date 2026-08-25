@@ -148,10 +148,12 @@ def api_backup_create():
         return jsonify({"error": "Admin only"}), 403
     sup = get_supabase()
     essential_only = bool((request.get_json(silent=True) or {}).get("essential_only"))
+    if not telegram_service.is_configured():
+        return jsonify({"error": "Telegram is not configured on the server. Set TG_API_ID, TG_API_HASH and TG_SESSION_STRING (or a valid session file) in the deployment environment."}), 400
     try:
         result = _make_backup(sup, user["org_id"], user, essential_only=essential_only)
-    except RuntimeError as e:
-        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"Backup failed: {e}"}), 400
     return jsonify({"ok": True, **result})
 
 
@@ -169,6 +171,8 @@ def api_backup_daily():
         return jsonify({"error": "Admin only"}), 403
     sup = get_supabase()
     is_master_global = user["role"] == "master_admin" and not user["org_id"]
+    if not telegram_service.is_configured():
+        return jsonify({"error": "Telegram is not configured on the server. Set TG_API_ID, TG_API_HASH and TG_SESSION_STRING in the deployment environment."}), 400
     if is_master_global:
         orgs = sup.table("organizations").select("id").eq("status", "active").execute().data
         done, failed = [], []
@@ -181,8 +185,8 @@ def api_backup_daily():
         return jsonify({"ok": True, "backed_up": done, "failed": failed})
     try:
         res = _make_backup(sup, user["org_id"], user, essential_only=True)
-    except RuntimeError as e:
-        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"Daily backup failed: {e}"}), 400
     return jsonify({"ok": True, **res})
 
 
@@ -202,7 +206,10 @@ def api_backup_restore(name):
         return jsonify({"error": "Backup not found"}), 404
     msg_id = record.data["message_id"]
     print(f"[BACKUP] Downloading backup from Telegram (message_id={msg_id})...")
-    backup_bytes = telegram_service.download_chunks(backup_channel_id, [msg_id])
+    try:
+        backup_bytes = telegram_service.download_chunks(backup_channel_id, [msg_id])
+    except Exception as e:
+        return jsonify({"error": f"Failed to fetch backup from Telegram: {e}"}), 400
     backup = json.loads(backup_bytes.decode("utf-8"))
     if backup.get("org_id") != user["org_id"]:
         return jsonify({"error": "Backup belongs to another organisation"}), 403
@@ -246,7 +253,10 @@ def api_backup_download(name):
     if not record or not record.data:
         return jsonify({"error": "Backup not found"}), 404
     msg_id = record.data["message_id"]
-    backup_bytes = telegram_service.download_chunks(backup_channel_id, [msg_id])
+    try:
+        backup_bytes = telegram_service.download_chunks(backup_channel_id, [msg_id])
+    except Exception as e:
+        return jsonify({"error": f"Failed to fetch backup from Telegram: {e}"}), 400
     log_action("download_backup", name)
     resp = Response(backup_bytes, mimetype="application/json")
     resp.headers["Content-Disposition"] = f'attachment; filename="{name}"'
@@ -269,7 +279,10 @@ def api_backup_delete(name):
         return jsonify({"error": "Backup not found"}), 404
     msg_id = record.data["message_id"]
     print(f"[BACKUP] Deleting backup from Telegram (message_id={msg_id})...")
-    asyncio.run(telegram_service.delete_file(backup_channel_id, [msg_id]))
+    try:
+        asyncio.run(telegram_service.delete_file(backup_channel_id, [msg_id]))
+    except Exception as e:
+        return jsonify({"error": f"Failed to delete backup from Telegram: {e}"}), 400
     sup.table("backups").delete().eq("id", record.data["id"]).execute()
     log_action("delete_backup", name)
     print(f"[BACKUP] Deleted backup '{name}'")
