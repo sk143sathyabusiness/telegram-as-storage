@@ -598,6 +598,7 @@ export async function loadOrgSettings() {
       <div style="font-size:12px;color:var(--muted);margin-top:6px">📄 ${s.file_count || 0} files · 👥 ${s.user_count || 0} users · 🗂 ${s.folder_count || 0} folders</div>
       <div style="font-size:12px;color:var(--muted);margin-top:4px">${s.last_backup ? "Last backup " + new Date(s.last_backup).toLocaleDateString() : "No backup yet"}</div>
       <div style="margin-top:12px;display:flex;gap:8px">
+        <button class="btn-sm" onclick="showSetBackupModal('${org.id}','${escapeHtml(org.name).replace(/'/g, "\\'")}')">Set backup channel</button>
         <button class="btn-sm" onclick="loadShares()">View share links</button>
         <button class="btn-sm" onclick="openChangePassword()">Change password</button>
       </div>

@@ -363,6 +363,33 @@ def test_rename_folder(monkeypatch):
 
 
 # ── SHARE LINKS (O6) ────────────────────────────────────────────────────────────
+def test_org_admin_sets_own_backup_channel(monkeypatch):
+    from app import create_app, orgs as orgs_mod
+    app = create_app()
+    fake = _FakeSupabase()
+    oid = str(uuid.uuid4())
+    fake.store["_q_organizations"] = [{"id": oid, "name": "Acme"}]
+    monkeypatch.setattr(orgs_mod, "get_supabase", lambda: fake)
+    monkeypatch.setattr(orgs_mod, "log_action", lambda *a, **k: None)
+    with app.test_client() as c:
+        _login_session(c, role="org_admin", org_id=oid)
+        r = c.put(f"/api/orgs/{oid}/backup-channel", json={"backup_channel_id": "-100555"})
+        assert r.status_code == 200, r.get_json()
+        assert fake.store["updates_organizations"][0]["backup_channel_id"] == "-100555"
+
+
+def test_org_admin_cannot_set_other_org_backup_channel(monkeypatch):
+    from app import create_app, orgs as orgs_mod
+    app = create_app()
+    fake = _FakeSupabase()
+    monkeypatch.setattr(orgs_mod, "get_supabase", lambda: fake)
+    monkeypatch.setattr(orgs_mod, "log_action", lambda *a, **k: None)
+    with app.test_client() as c:
+        _login_session(c, role="org_admin", org_id=str(uuid.uuid4()))
+        r = c.put(f"/api/orgs/{uuid.uuid4()}/backup-channel", json={"backup_channel_id": "-100555"})
+        assert r.status_code == 403
+
+
 def test_shares_list_and_revoke(monkeypatch):
     from app import create_app, sharing as sharing_mod
     app = create_app()

@@ -407,6 +407,7 @@ export async function showSetBackupModal(orgId, orgName) {
   if (r.ok) {
     toast(`Backup channel ${d.backup_channel_id ? "set to " + d.backup_channel_id : "cleared"}`, "ok");
     loadOrgs();
+    import("./admin.js").then(m => m.loadOrgSettings?.());
   } else {
     toast(d.error || "Failed to set backup channel", "err");
   }

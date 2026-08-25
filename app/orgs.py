@@ -192,7 +192,10 @@ def api_orgs_create():
 @login_required
 def api_orgs_set_backup_channel(org_id):
     user = current_user()
-    if user["role"] != "master_admin":
+    if user["role"] == "org_admin":
+        if str(org_id) != str(user["org_id"]):
+            return jsonify({"error": "You can only manage your own organisation's backup channel"}), 403
+    elif user["role"] != "master_admin":
         return jsonify({"error": "Master admin only"}), 403
 
     data = request.get_json(force=True) or {}
