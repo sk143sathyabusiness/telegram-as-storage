@@ -382,7 +382,7 @@ export async function createBackup() {
   if (btn) { btn.disabled = true; btn.textContent = "Creating…"; }
   const r = await fetch(API + "/backup/create", {method: "POST"});
   if (btn) { btn.disabled = false; btn.textContent = "＋ Create backup"; }
-  if (r.ok) { loadBackups(); toast("Backup created"); } else { const d = await r.json().catch(() => ({})); toast(d.error || "Backup failed", "err"); }
+  if (r.ok) { loadBackups(); toast("Backup created"); } else { const d = await r.json().catch(() => ({})); console.error("Backup create failed:", d); toast(d.error || "Backup failed", "err"); }
 }
 
 export async function restoreBackup(name) {
