@@ -367,7 +367,27 @@ a      { color: var(--accent); text-decoration: none; }
   padding-top: 7px; border-top: 1px solid var(--glass-border); margin-top: 7px; font-weight: 500;
 }
 
-/* ── FILE TABLE ──────────────────────────────────────────────────────── */
+/* ── FILE GRID (1:1 cards, eager preview) ─────────────────────────────── */
+.file-grid-wrap { flex: 1; padding: 14px 18px; overflow-y: auto; }
+.file-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 14px; }
+.file-card { display: flex; flex-direction: column; background: var(--glass-bg); backdrop-filter: blur(14px) saturate(160%); -webkit-backdrop-filter: blur(14px) saturate(160%); border: 1px solid var(--glass-border); border-radius: 16px; overflow: hidden; box-shadow: var(--glass-shadow); transition: transform .18s, box-shadow .18s; animation: row-in .35s both; }
+.file-card:hover { transform: translateY(-2px); box-shadow: 0 10px 28px rgba(0,0,0,.14); }
+.file-thumb-wrap { position: relative; aspect-ratio: 1/1; background: rgba(255,255,255,.55); overflow: hidden; display: flex; align-items: center; justify-content: center; }
+.file-thumb { width: 100%; height: 100%; object-fit: cover; display: block; }
+.file-thumb-icon { font-size: 38px; opacity: .85; }
+.file-card-footer { padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+.file-card-name { font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.file-card-meta { font-size: 11px; color: var(--muted); font-family: var(--mono); display: flex; gap: 6px; align-items: center; }
+.card-menu { position: absolute; top: 8px; right: 8px; }
+.card-menu-btn { width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--glass-border); background: rgba(255,255,255,.85); backdrop-filter: blur(8px); cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 16px; line-height: 1; color: var(--text); box-shadow: 0 2px 8px rgba(0,0,0,.12); }
+.card-menu-btn:hover { background: var(--accent-dim); border-color: var(--accent-mid); }
+.card-dropdown { position: absolute; right: 0; top: 34px; min-width: 160px; background: rgba(255,255,255,.96); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border: 1px solid var(--glass-border); border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,.18); padding: 6px; display: flex; flex-direction: column; gap: 4px; z-index: 20; }
+.card-dropdown button { text-align: left; font-size: 12px; padding: 8px 10px; border-radius: 8px; border: none; background: transparent; cursor: pointer; color: var(--text); }
+.card-dropdown button:hover { background: var(--accent-dim); }
+.card-dropdown button.danger { color: var(--danger); }
+.skeleton-card { aspect-ratio: 1/1; border-radius: 16px; background: rgba(148,163,184,.14); animation: skeleton-pulse 1.2s infinite alternate; }
+
+/* ── FILE TABLE (kept hidden, legacy) ─────────────────────────────────── */
 .file-table-wrap { flex: 1; padding: 0; }
 table { width: 100%; border-collapse: collapse; }
 thead th {

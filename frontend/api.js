@@ -219,7 +219,17 @@ let _skeletonShown = false;
 export function showSkeleton() {
   if (_skeletonShown) return;
   _skeletonShown = true;
+  const grid = document.getElementById("file-grid");
   const tbody = document.getElementById("file-tbody");
+  if (grid) {
+    grid.innerHTML = "";
+    for (let i = 0; i < 6; i++) {
+      const d = document.createElement("div");
+      d.className = "skeleton-card";
+      grid.appendChild(d);
+    }
+    return;
+  }
   if (!tbody) return;
   tbody.innerHTML = "";
   for (let i = 0; i < 5; i++) {
@@ -234,7 +244,11 @@ export function showSkeleton() {
     tbody.appendChild(tr);
   }
 }
-export function hideSkeleton() { _skeletonShown = false; }
+export function hideSkeleton() {
+  _skeletonShown = false;
+  const grid = document.getElementById("file-grid");
+  if (grid) grid.innerHTML = "";
+}
 
 // ── FETCH WRAPPERS (thin convenience) ───────────────────────────────────────
 export async function fetchMe() {

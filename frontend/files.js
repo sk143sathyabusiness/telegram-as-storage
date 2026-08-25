@@ -166,13 +166,90 @@ export function clearFileSearch() {
   refreshFiles();
 }
 
+function getFileIcon(ext) {
+  const icons = { png:"🖼️", jpg:"🖼️", jpeg:"🖼️", gif:"🖼️", svg:"🖼️", webp:"🖼️", bmp:"🖼️", pdf:"📄", mp4:"🎬", webm:"🎬", mp3:"🎵", wav:"🎵", ogg:"🎵", docx:"📝", doc:"📝", xlsx:"📊", xls:"📊", pptx:"📊", ppt:"📊", txt:"📄", md:"📄", zip:"📦", rar:"📦" };
+  return icons[ext] || "📄";
+}
+export function toggleMenu(fileId) {
+  const menu = document.getElementById(`menu-${fileId}`);
+  if (!menu) return;
+  const isVisible = menu.style.display === "flex";
+  closeAllMenus();
+  if (!isVisible) menu.style.display = "flex";
+  event?.stopPropagation();
+}
+export function closeAllMenus() {
+  document.querySelectorAll(".card-dropdown").forEach(m => m.style.display = "none");
+}
+document.addEventListener("click", closeAllMenus);
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeAllMenus(); });
+
+function loadCardThumb(fileId, ext, imgEl, iconEl) {
+  const imageExts = ["png","jpg","jpeg","gif","svg","webp","bmp"];
+  if (!imageExts.includes(ext)) return;
+  const passphrase = getAutoPassphrase();
+  fetch(`${API}/files/${fileId}/preview`, {credentials:"same-origin"}).then(r => {
+    if (!r.ok) throw new Error();
+    return r.arrayBuffer();
+  }).then(async buf => {
+    const ct = new Uint8Array(buf);
+    const iv = ct.slice(0, 12);
+    const key = await deriveKey(passphrase);
+    let plain;
+    try { plain = await crypto.subtle.decrypt({ name:"AES-GCM", iv }, key, ct.slice(12)); }
+    catch { return; }
+    const mime = getMimeForExt(ext);
+    const blob = new Blob([plain], {type: mime});
+    const url = URL.createObjectURL(blob);
+    imgEl.src = url;
+    imgEl.style.display = "block";
+    if (iconEl) iconEl.style.display = "none";
+  }).catch(()=>{});
+}
+
+function renderFileCard(f, v, index) {
+  const ext = f.name.split(".").pop().toLowerCase();
+  const icon = getFileIcon(ext);
+  const canDelete = state.currentUser?.role === "org_admin" || state.currentUser?.role === "master_admin";
+  const safeName = f.name.replace(/'/g,"\\'");
+  const card = document.createElement("div");
+  card.className = "file-card";
+  card.dataset.id = f.id;
+  card.style.animationDelay = `${index * 40}ms`;
+  card.innerHTML = `
+    <div class="file-thumb-wrap" onclick="previewFile('${f.id}','${safeName}','${v ? v.size_bytes : 0}')" style="cursor:pointer">
+      <img class="file-thumb" data-fileid="${f.id}" alt="${escapeHtml(f.name)}" style="display:none">
+      <div class="file-thumb-icon">${icon}</div>
+      <div class="card-menu" onclick="event.stopPropagation()">
+        <button class="card-menu-btn" onclick="toggleMenu('${f.id}')" aria-label="Options">⋯</button>
+        <div class="card-dropdown" id="menu-${f.id}" style="display:none">
+          <button onclick="previewFile('${f.id}','${safeName}','${v ? v.size_bytes : 0}'); closeAllMenus()">👁 Preview</button>
+          <button onclick="shareFile('${f.id}','${safeName}'); closeAllMenus()">Share</button>
+          <button onclick="emailFile('${f.id}','${safeName}'); closeAllMenus()">Email</button>
+          <button onclick="editFile('${f.id}','${safeName}','${v ? v.size_bytes : 0}'); closeAllMenus()">Edit</button>
+          <button onclick="downloadFile('${f.id}','${safeName}'); closeAllMenus()">⬇ Download</button>
+          <button onclick="openVersions('${f.id}','${safeName}'); closeAllMenus()">History</button>
+          ${canDelete ? `<button class="danger" onclick="deleteFile('${f.id}'); closeAllMenus()">Delete</button>` : ""}
+        </div>
+      </div>
+    </div>
+    <div class="file-card-footer">
+      <div class="file-card-name" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</div>
+      <div class="file-card-meta"><span>${v ? fmt(v.size_bytes) : "—"}</span><span class="version-badge">v${v ? v.version_number : "—"}</span></div>
+      <div class="file-card-meta">${v ? escapeHtml(v.uploaded_by_name || "—") : "—"} · ${v ? fmtDate(v.uploaded_at) : "—"}</div>
+    </div>`;
+  return card;
+}
+
 async function runFileSearch(q) {
-  const r = await fetch(`${API}/files/search?q=${encodeURIComponent(q)}`);
+  const r = await fetch(`${API}/files/search?q=${encodeURIComponent(q)}`, {credentials:"same-origin"});
   if (!r.ok) return;
   const files = await r.json();
+  const grid = document.getElementById("file-grid");
   const tbody = document.getElementById("file-tbody");
   const empty = document.getElementById("empty-files");
-  tbody.innerHTML = "";
+  if (grid) grid.innerHTML = "";
+  if (tbody) tbody.innerHTML = "";
   if (!files.length) {
     empty.style.display = "";
     empty.innerHTML = `<div class="empty-icon">🔍</div>No files match "<strong>${escapeHtml(q)}</strong>".`;
@@ -183,29 +260,18 @@ async function runFileSearch(q) {
   for (let i = 0; i < files.length; i++) {
     const f = files[i];
     const v = f.current_version;
-    const tr = document.createElement("tr");
-    tr.style.animationDelay = `${i * 30}ms`;
-    tr.className = "row-enter";
-    tr.innerHTML = `
-      <td><span class="file-name">${escapeHtml(f.name)}</span></td>
-      <td><span class="file-meta">${v ? fmt(v.size_bytes) : "—"}</span></td>
-      <td><span class="version-badge">v${v ? v.version_number : "—"}</span></td>
-      <td><span class="file-meta">${f.folder_name !== "Root" ? "📁 " + escapeHtml(f.folder_name) : "Root"}</span></td>
-      <td><span class="file-meta">${v ? fmtDate(v.uploaded_at) : "—"}</span></td>
-      <td>
-        <div class="action-row">
-          <button class="btn-sm" onclick="previewFile('${f.id}','${f.name.replace(/'/g,"\\'")}','${v ? v.size_bytes : 0}')" title="Preview">👁</button>
-          <button class="btn-sm" onclick="shareFile('${f.id}','${f.name.replace(/'/g,"\\'")}')">Share</button>
-          <button class="btn-sm" onclick="emailFile('${f.id}','${f.name.replace(/'/g,"\\'")}')">Email</button>
-          <button class="btn-sm" onclick="editFile('${f.id}','${f.name.replace(/'/g,"\\'")}','${v ? v.size_bytes : 0}')">Edit</button>
-          <button class="btn-sm" onclick="downloadFile('${f.id}','${f.name.replace(/'/g,"\\'")}')">↓</button>
-          <button class="btn-sm" onclick="openVersions('${f.id}','${f.name.replace(/'/g,"\\'")}')">History</button>
-          ${state.currentUser?.role === "org_admin" || state.currentUser?.role === "master_admin"
-            ? `<button class="btn-sm danger" onclick="deleteFile('${f.id}')">Delete</button>`
-            : ""}
-        </div>
-      </td>`;
-    tbody.appendChild(tr);
+    const card = renderFileCard(f, v, i);
+    if (grid) grid.appendChild(card);
+    // eager 1:1 preview
+    const imgEl = card.querySelector(".file-thumb");
+    const iconEl = card.querySelector(".file-thumb-icon");
+    loadCardThumb(f.id, f.name.split(".").pop().toLowerCase(), imgEl, iconEl);
+    // keep tbody for legacy tests (hidden)
+    if (tbody) {
+      const tr = document.createElement("tr"); tr.style.display="none";
+      tr.innerHTML = `<td>${escapeHtml(f.name)}</td>`;
+      tbody.appendChild(tr);
+    }
   }
 }
 
@@ -213,41 +279,30 @@ export async function refreshFiles() {
   if (_fileSearchActive) return;
   if (document.getElementById("folder-title")) document.getElementById("folder-title").textContent = state.currentFolderName;
   const fid = state.currentFolderId !== null ? `folder_id=${state.currentFolderId}` : "folder_id=";
-  const r = await fetch(`${API}/files?${fid}`);
+  const r = await fetch(`${API}/files?${fid}`, {credentials:"same-origin"});
   if (!r.ok) return;
   const files = await r.json();
+  const grid = document.getElementById("file-grid");
   const tbody = document.getElementById("file-tbody");
   const empty = document.getElementById("empty-files");
-  tbody.innerHTML = "";
+  if (grid) grid.innerHTML = "";
+  if (tbody) tbody.innerHTML = "";
   hideSkeleton();
   if (!files.length) { empty.style.display = ""; return; }
   empty.style.display = "none";
   for (let i = 0; i < files.length; i++) {
     const f = files[i];
     const v = f.current_version;
-    const tr = document.createElement("tr");
-    tr.style.animationDelay = `${i * 30}ms`;
-    tr.className = "row-enter";
-    tr.innerHTML = `
-      <td><span class="file-name">${escapeHtml(f.name)}</span></td>
-      <td><span class="file-meta">${v ? fmt(v.size_bytes) : "—"}</span></td>
-      <td><span class="version-badge">v${v ? v.version_number : "—"}</span></td>
-      <td><span class="file-meta">${v ? (v.uploaded_by_name || "—") : "—"}</span></td>
-      <td><span class="file-meta">${v ? fmtDate(v.uploaded_at) : "—"}</span></td>
-      <td>
-        <div class="action-row">
-          <button class="btn-sm" onclick="previewFile('${f.id}','${f.name.replace(/'/g,"\\'")}','${v ? v.size_bytes : 0}')" title="Preview">👁</button>
-          <button class="btn-sm" onclick="shareFile('${f.id}','${f.name.replace(/'/g,"\\'")}')">Share</button>
-          <button class="btn-sm" onclick="emailFile('${f.id}','${f.name.replace(/'/g,"\\'")}')">Email</button>
-          <button class="btn-sm" onclick="editFile('${f.id}','${f.name.replace(/'/g,"\\'")}','${v ? v.size_bytes : 0}')">Edit</button>
-          <button class="btn-sm" onclick="downloadFile('${f.id}','${f.name.replace(/'/g,"\\'")}')">↓</button>
-          <button class="btn-sm" onclick="openVersions('${f.id}','${f.name.replace(/'/g,"\\'")}')">History</button>
-          ${state.currentUser?.role === "org_admin" || state.currentUser?.role === "master_admin"
-            ? `<button class="btn-sm danger" onclick="deleteFile('${f.id}')">Delete</button>`
-            : ""}
-        </div>
-      </td>`;
-    tbody.appendChild(tr);
+    const card = renderFileCard(f, v, i);
+    if (grid) grid.appendChild(card);
+    const imgEl = card.querySelector(".file-thumb");
+    const iconEl = card.querySelector(".file-thumb-icon");
+    loadCardThumb(f.id, f.name.split(".").pop().toLowerCase(), imgEl, iconEl);
+    if (tbody) {
+      const tr = document.createElement("tr"); tr.style.display="none";
+      tr.innerHTML = `<td>${escapeHtml(f.name)}</td>`;
+      tbody.appendChild(tr);
+    }
   }
 }
 
@@ -743,6 +798,11 @@ document.getElementById("file-tbody")?.addEventListener("dblclick", e => {
   const tr = e.target.closest("tr"); if (!tr) return;
   const btn = tr.querySelector(".btn-sm"); if (btn) btn.click();
 });
+document.getElementById("file-grid")?.addEventListener("dblclick", e => {
+  const card = e.target.closest(".file-card"); if (!card) return;
+  const id = card.dataset.id || card.querySelector(".card-menu-btn")?.getAttribute("onclick")?.match(/'([^']+)'/)?.[1];
+  if (id) { const name = card.querySelector(".file-card-name")?.textContent || ""; previewFile(id, name, 0); }
+});
 
 // Window exposure
 if (typeof window !== "undefined") {
@@ -754,6 +814,8 @@ if (typeof window !== "undefined") {
   window.onFileSearch = onFileSearch;
   window.clearFileSearch = clearFileSearch;
   window.refreshFiles = refreshFiles;
+  window.toggleMenu = toggleMenu;
+  window.closeAllMenus = closeAllMenus;
   window.downloadFile = downloadFile;
   window.deleteFile = deleteFile;
   window.openVersions = openVersions;

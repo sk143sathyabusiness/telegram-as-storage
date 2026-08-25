@@ -7,7 +7,7 @@
 <title>TeamVault</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=3">
+<link rel="stylesheet" href="style.css?v=8">
 </head>
 <body>
 
@@ -125,16 +125,9 @@
           <div class="overall-eta" id="overall-eta"></div>
         </div>
 
-        <div class="file-table-wrap">
-          <table id="file-table">
-            <thead>
-              <tr>
-                <th>Name</th><th>Size</th><th>Version</th>
-                <th>Uploaded by</th><th>Modified</th><th></th>
-              </tr>
-            </thead>
-            <tbody id="file-tbody"></tbody>
-          </table>
+        <div class="file-grid-wrap">
+          <div id="file-grid" class="file-grid"></div>
+          <table id="file-table" style="display:none"><tbody id="file-tbody"></tbody></table>
           <div class="empty-state" id="empty-files" style="display:none">
             <div class="empty-icon">📂</div>
             No files here yet — upload one above.
@@ -538,11 +531,11 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.8.0/mammoth.browser.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-<script type="module" src="frontend/api.js?v=7"></script>
-<script type="module" src="frontend/auth.js?v=7"></script>
-<script type="module" src="frontend/folders.js?v=7"></script>
-<script type="module" src="frontend/files.js?v=7"></script>
-<script type="module" src="frontend/sharing.js?v=7"></script>
-<script type="module" src="frontend/admin.js?v=7"></script>
+<script type="module" src="frontend/api.js?v=8"></script>
+<script type="module" src="frontend/auth.js?v=8"></script>
+<script type="module" src="frontend/folders.js?v=8"></script>
+<script type="module" src="frontend/files.js?v=8"></script>
+<script type="module" src="frontend/sharing.js?v=8"></script>
+<script type="module" src="frontend/admin.js?v=8"></script>
 </body>
 </html>
