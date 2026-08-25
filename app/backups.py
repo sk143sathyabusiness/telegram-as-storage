@@ -171,8 +171,6 @@ def api_backup_daily():
     user = current_user()
     if user["role"] not in ("org_admin", "master_admin"):
         return jsonify({"error": "Admin only"}), 403
-    if not user["org_id"]:
-        return jsonify({"error": "Open an organisation first (Organisations → Open) before running a backup."}), 400
     sup = get_supabase()
     is_master_global = user["role"] == "master_admin" and not user["org_id"]
     if not telegram_service.is_configured():
