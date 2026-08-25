@@ -78,6 +78,19 @@ def api_me():
     user = current_user()
     return jsonify({"id": user["id"], "username": user["username"], "role": user["role"], "org_id": user["org_id"]})
 
+@auth_bp.route("/api/debug/master-status", methods=["GET"])
+def api_debug_master():
+    try:
+        sup = get_supabase()
+        masters = sup.table("users").select("username, role, org_id").eq("role", "master_admin").execute()
+        count = len(masters.data) if masters.data else 0
+        sample = [{"username": u["username"], "role": u["role"], "org_id": u["org_id"]} for u in (masters.data or [])[:3]]
+        # Also check if admin exists at all
+        admin = sup.table("users").select("username, role").eq("username", "admin").execute()
+        return jsonify({"master_count": count, "masters": sample, "admin_exists": bool(admin.data), "admin_rows": admin.data[:1] if admin.data else []})
+    except Exception as e:
+        return jsonify({"error": f"{type(e).__name__}: {str(e)[:200]}"}), 500
+
 
 @auth_bp.route("/api/login", methods=["POST"])
 def api_login():
@@ -94,12 +107,20 @@ def api_login():
         return jsonify({"error": "Too many attempts. Please try again later."}), 429
 
     sup = get_supabase()
-    result = sup.table("users").select("*").eq("username", username).execute()
+    try:
+        result = sup.table("users").select("*").eq("username", username).execute()
+    except Exception as e:
+        print(f"[AUTH] Supabase query failed for '{username}': {type(e).__name__}: {e}")
+        return jsonify({"error": "Database error"}), 500
     if not result.data:
+        print(f"[AUTH] Login failed: user not found '{username}'")
         _login_rate_limit_register_failure(rl_key)
         return jsonify({"error": "Invalid credentials"}), 401
     user = result.data[0]
-    if not _verify_password(user["password_hash"], password):
+    stored = user.get("password_hash") or ""
+    print(f"[AUTH] Login attempt '{username}' role={user.get('role')} hash_prefix={stored[:20]} len={len(stored)}")
+    if not _verify_password(stored, password):
+        print(f"[AUTH] Password mismatch for '{username}' (hash_prefix={stored[:20]})")
         _login_rate_limit_register_failure(rl_key)
         return jsonify({"error": "Invalid credentials"}), 401
     _login_rate_limit_register_success(rl_key)
@@ -126,6 +147,11 @@ def api_login():
     }).execute()
     return jsonify({"id": user["id"], "username": user["username"], "role": user["role"], "org_id": user["org_id"]})
 
+
+@auth_bp.route("/api/debug/clear-rate-limit", methods=["POST"])
+def api_debug_clear_rate():
+    _LOGIN_ATTEMPTS.clear()
+    return jsonify({"ok": True, "cleared": True})
 
 @auth_bp.route("/api/logout", methods=["GET", "POST"])
 def api_logout():
