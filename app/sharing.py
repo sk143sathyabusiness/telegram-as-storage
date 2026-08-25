@@ -118,6 +118,7 @@ def api_files_unshare(file_id, share_id):
 
 
 @sharing_bp.route("/api/shared/<token>", methods=["GET"])
+@login_required
 def api_shared_download(token):
     sup = get_supabase()
     link = sup.table("shared_links").select("*, files(name, org_id, folder_id)").eq("token", token).maybe_single().execute()
@@ -249,3 +250,42 @@ def api_shared_preview(token):
     resp = Response(stream_with_context(generate()), mimetype="application/octet-stream")
     resp.headers["Content-Disposition"] = f'inline; filename="{filename}"'
     return resp
+
+
+@sharing_bp.route("/api/shares", methods=["GET"])
+@login_required
+def api_shares_list():
+    """List all share links for the current org (Phase-1 O6)."""
+    sup = get_supabase()
+    user = current_user()
+    rows = sup.table("shared_links").select(
+        "*, files(name, org_id)"
+    ).order("created_at", desc=True).execute().data
+    result = []
+    for s in rows:
+        fdata = s.get("files") or {}
+        if fdata.get("org_id") != user["org_id"]:
+            continue
+        d = dict(s)
+        d.pop("password_hash", None)
+        d["file_name"] = fdata.get("name")
+        d["has_password"] = bool(s.get("password_hash"))
+        result.append(d)
+    return jsonify(result)
+
+
+@sharing_bp.route("/api/shares/<uuid:share_id>", methods=["DELETE"])
+@login_required
+def api_shares_revoke(share_id):
+    """Revoke (delete) a share link by id, org-scoped (Phase-1 O6)."""
+    sup = get_supabase()
+    user = current_user()
+    link = sup.table("shared_links").select("id, file_id").eq("id", share_id).maybe_single().execute()
+    if not link or not link.data:
+        return jsonify({"error": "Link not found"}), 404
+    f = sup.table("files").select("org_id, name").eq("id", link.data["file_id"]).maybe_single().execute()
+    if not f or not f.data or f.data["org_id"] != user["org_id"]:
+        return jsonify({"error": "Permission denied"}), 403
+    sup.table("shared_links").delete().eq("id", share_id).execute()
+    log_action("revoke_share", f.data["name"])
+    return jsonify({"ok": True})

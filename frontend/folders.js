@@ -57,6 +57,7 @@ function makeFolderNode(folder, children, depth) {
   item.innerHTML = `<span class="icon">📁</span> <span class="folder-label">${folder.name}</span>`
     + (isEssential ? `<span title="Essential (daily backup)" style="margin-left:auto;font-size:11px">★</span>` : ``)
     + (canDelete ? `<button type="button" class="folder-del-btn" title="Delete folder" data-fid="${folder.id}" data-fname="${folder.name.replace(/"/g,'&quot;')}">🗑</button>` : ``)
+    + (canDelete ? `<button type="button" class="folder-rename-btn" title="Rename folder" data-fid="${folder.id}" data-fname="${folder.name.replace(/"/g,'&quot;')}">✎</button>` : ``)
     + (canDelete ? `<button type="button" class="folder-ess-btn" title="${isEssential ? 'Remove from essential (daily backup)' : 'Mark as essential (daily backup)'}" data-fid="${folder.id}">${isEssential ? "☆" : "★"}</button>` : ``);
   item.onclick = () => navigateFolder(folder.id, folder.name);
   wrap.appendChild(item);
@@ -86,8 +87,28 @@ document.addEventListener("click", e => {
   if (ess) {
     e.stopPropagation();
     toggleFolderEssential(ess.dataset.fid);
+    return;
+  }
+  const ren = e.target.closest(".folder-rename-btn");
+  if (ren) {
+    e.stopPropagation();
+    renameFolder(ren.dataset.fid, ren.dataset.fname);
   }
 });
+
+export async function renameFolder(folderId, currentName) {
+  const name = prompt(`Rename folder "${currentName}" to:`, currentName);
+  if (!name || !name.trim()) return;
+  const r = await fetch(`${API}/folders/${folderId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ name: name.trim() }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (r.ok) { toast("Folder renamed", "ok"); await loadFolders(); }
+  else toast(d.error || "Rename failed", "err");
+}
 
 export async function toggleFolderEssential(folderId) {
   const r = await fetch(`${API}/folders/${folderId}/essential`, {
@@ -172,6 +193,7 @@ if (typeof window !== "undefined") {
   window.promptNewFolder = promptNewFolder;
   window.deleteFolder = deleteFolder;
   window.toggleFolderEssential = toggleFolderEssential;
+  window.renameFolder = renameFolder;
   window.buildPath = buildPath;
   window.updateBreadcrumb = updateBreadcrumb;
   window.folderMap = state.folderMap;

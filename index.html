@@ -85,6 +85,12 @@
         <div class="sidebar-item" id="nav-backup" onclick="showView('backup')">
           <span class="icon">💾</span> Backup
         </div>
+        <div class="sidebar-item" id="nav-shares" onclick="showView('shares')">
+          <span class="icon">🔗</span> Shares
+        </div>
+        <div class="sidebar-item" id="nav-settings" onclick="showView('settings')">
+          <span class="icon">⚙️</span> Settings
+        </div>
         <div class="sidebar-item" id="nav-orgs" onclick="showView('orgs')" style="display:none">
           <span class="icon">🏢</span> Organisations
         </div>
@@ -304,7 +310,12 @@
           <div class="panel-header">
             <div class="panel-title">🏢 Organisations</div>
             <button class="btn-sm active" onclick="showCreateOrgModal()">＋ New Organisation</button>
+            <button class="btn-sm" id="master-users-btn" onclick="openMasterUsers()" style="display:none">👥 Manage Users</button>
             <button class="btn-sm" onclick="loadOrgs()">↻ Refresh</button>
+          </div>
+          <div id="master-search" style="display:none;margin:0 0 12px">
+            <input id="master-search-input" placeholder="🔍 Search files & users across all orgs…" oninput="onMasterSearch()" style="width:100%;padding:8px 12px;border-radius:10px;background:var(--glass-bg);border:1px solid var(--glass-border);color:var(--text)">
+            <div id="master-search-results" style="display:none;margin-top:8px"></div>
           </div>
           <div id="orgs-stats" style="display:none;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:0 0 14px"></div>
           <div id="orgs-list"></div>
@@ -312,6 +323,32 @@
             <div class="empty-icon">🏢</div>
             No organisations yet.
           </div>
+        </div>
+      </div>
+
+      <!-- shares panel (Phase-1 O6) -->
+      <div id="view-shares" style="display:none">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">🔗 Shared Links</div>
+            <button class="btn-sm" onclick="loadShares()">↻ Refresh</button>
+          </div>
+          <div id="shares-list"></div>
+          <div class="empty-state" id="empty-shares" style="display:none">
+            <div class="empty-icon">🔗</div>
+            No active share links.
+          </div>
+        </div>
+      </div>
+
+      <!-- org settings panel (Phase-1 O7) -->
+      <div id="view-settings" style="display:none">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">⚙️ Organisation Settings</div>
+            <button class="btn-sm" onclick="loadOrgSettings()">↻ Refresh</button>
+          </div>
+          <div id="settings-content"></div>
         </div>
       </div>
     </div>
@@ -390,6 +427,10 @@
       <input id="eo-size" placeholder="e.g. 1-50 employees">
     </div>
     <div class="field">
+      <label>Storage quota (bytes, blank = unlimited)</label>
+      <input id="eo-quota" type="number" min="0" placeholder="e.g. 53687091200 for 50GB">
+    </div>
+    <div class="field">
       <label>Status</label>
       <select id="eo-status">
         <option value="active">active</option>
@@ -401,6 +442,17 @@
     <div class="modal-actions">
       <button class="btn-sm" onclick="closeModal('edit-org-modal')">Cancel</button>
       <button class="btn-sm active" onclick="saveEditOrg()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── MASTER USERS MODAL (Phase-1 M6) ───────────────────────────────────── -->
+<div class="modal-backdrop" id="master-users-modal" style="display:none">
+  <div class="modal" style="max-width:560px;max-height:80vh;overflow:auto">
+    <h3>👥 All Users (Master)</h3>
+    <div id="master-users-list" style="margin-top:8px"></div>
+    <div class="modal-actions">
+      <button class="btn-sm" onclick="closeModal('master-users-modal')">Close</button>
     </div>
   </div>
 </div>
@@ -695,10 +747,10 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script type="module" src="frontend/api.js?v=13"></script>
 <script type="module" src="frontend/auth.js?v=13"></script>
-<script type="module" src="frontend/folders.js?v=14"></script>
-<script type="module" src="frontend/files.js?v=14"></script>
+<script type="module" src="frontend/folders.js?v=15"></script>
+<script type="module" src="frontend/files.js?v=15"></script>
 <script type="module" src="frontend/sharing.js?v=13"></script>
-<script type="module" src="frontend/admin.js?v=14"></script>
-<script type="module" src="frontend/orgs.js?v=15"></script>
+<script type="module" src="frontend/admin.js?v=15"></script>
+<script type="module" src="frontend/orgs.js?v=16"></script>
 </body>
 </html>

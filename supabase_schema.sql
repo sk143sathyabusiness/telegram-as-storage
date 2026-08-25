@@ -10,6 +10,7 @@ CREATE TABLE organizations (
     settings JSONB DEFAULT '{}'::jsonb,
     telegram_chat_id TEXT,
     backup_channel_id TEXT,
+    storage_quota_bytes BIGINT,
     status TEXT NOT NULL DEFAULT 'active',
     created_at TIMESTAMPTZ DEFAULT now()
 );

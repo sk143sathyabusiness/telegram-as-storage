@@ -245,6 +245,13 @@ def api_orgs_edit(org_id):
             update[f] = str(data[f]).strip()
     if "status" in data and str(data["status"]).strip():
         update["status"] = str(data["status"]).strip()
+    if "storage_quota_bytes" in data:
+        raw_q = data["storage_quota_bytes"]
+        try:
+            q = int(raw_q) if raw_q not in (None, "") else None
+        except (ValueError, TypeError):
+            return jsonify({"error": "storage_quota_bytes must be an integer"}), 400
+        update["storage_quota_bytes"] = q
 
     if not update:
         return jsonify({"error": "Nothing to update"}), 400
@@ -252,6 +259,22 @@ def api_orgs_edit(org_id):
     sup.table("organizations").update(update).eq("id", org_id).execute()
     log_action("edit_org", f"org_id={org_id}", org_id=org_id)
     return jsonify({"ok": True, **update})
+
+
+@orgs_bp.route("/api/orgs/<uuid:org_id>", methods=["DELETE"])
+@login_required
+def api_orgs_delete(org_id):
+    """Soft-delete an organisation (sets status='deleted'); master only (M9)."""
+    user = current_user()
+    if user["role"] != "master_admin":
+        return jsonify({"error": "Master admin only"}), 403
+    sup = get_supabase()
+    org = sup.table("organizations").select("id, name").eq("id", org_id).maybe_single().execute()
+    if not org or not org.data:
+        return jsonify({"error": "Organisation not found"}), 404
+    sup.table("organizations").update({"status": "deleted"}).eq("id", org_id).execute()
+    log_action("delete_org", f"org_id={org_id} name={org.data['name']}", org_id=org_id)
+    return jsonify({"ok": True})
 
 
 @orgs_bp.route("/api/orgs/<uuid:org_id>/reset-admin", methods=["POST"])

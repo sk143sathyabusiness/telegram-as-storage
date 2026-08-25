@@ -3,6 +3,10 @@ import { API, toast, escapeHtml, state, fmt } from "./api.js";
 
 export async function loadOrgs() {
   const isMaster = state.currentUser?.role === "master_admin";
+  const ms = document.getElementById("master-search");
+  if (ms) ms.style.display = isMaster ? "block" : "none";
+  const mub = document.getElementById("master-users-btn");
+  if (mub) mub.style.display = isMaster ? "" : "none";
   const r = await fetch(`${API}/orgs`, {credentials: "same-origin"});
   const list = document.getElementById("orgs-list");
   const empty = document.getElementById("empty-orgs");
@@ -61,8 +65,10 @@ export async function loadOrgs() {
         ${o.status !== "approved" && o.status !== "active" ? `<button class="btn-sm active" onclick="approveOrg('${o.id}')">Approve</button>` : ""}
         ${o.status !== "rejected" ? `<button class="btn-sm danger" onclick="rejectOrg('${o.id}')">Reject</button>` : ""}
         <button class="btn-sm" onclick="showSetBackupModal('${o.id}','${escapeHtml(o.name).replace(/'/g, "\\'")}')">Set backup</button>
-        ${isMaster ? `<button class="btn-sm" onclick="openEditOrg('${o.id}','${escapeHtml(o.name).replace(/'/g, "\\'")}','${escapeHtml(String(o.telegram_chat_id || ""))}','${escapeHtml(o.industry || "")}','${escapeHtml(o.size || "")}','${escapeHtml(o.status || "active")}')">Edit</button>` : ""}
+        ${isMaster ? `<button class="btn-sm" onclick="openEditOrg('${o.id}','${escapeHtml(o.name).replace(/'/g, "\\'")}','${escapeHtml(String(o.telegram_chat_id || ""))}','${escapeHtml(o.industry || "")}','${escapeHtml(o.size || "")}','${escapeHtml(o.status || "active")}','${escapeHtml(String(o.storage_quota_bytes || ""))}')">Edit</button>` : ""}
         ${isMaster ? `<button class="btn-sm" onclick="resetOrgAdmin('${o.id}','${escapeHtml(o.name).replace(/'/g, "\\'")}')">Reset admin</button>` : ""}
+        ${isMaster ? (o.status === "deleted" ? "" : `<button class="btn-sm" onclick="toggleSuspendOrg('${o.id}','${escapeHtml(o.name).replace(/'/g, "\\'")}','${escapeHtml(o.status || "active")}')">${o.status === "suspended" ? "Reactivate" : "Suspend"}</button>`) : ""}
+        ${isMaster ? (o.status === "deleted" ? "" : `<button class="btn-sm danger" onclick="deleteOrg('${o.id}','${escapeHtml(o.name).replace(/'/g, "\\'")}')">Delete</button>`) : ""}
       </div>`;
     list.appendChild(card);
   }
@@ -157,9 +163,16 @@ if (typeof window !== "undefined") {
   window.openEditOrg = openEditOrg;
   window.saveEditOrg = saveEditOrg;
   window.resetOrgAdmin = resetOrgAdmin;
+  window.toggleSuspendOrg = toggleSuspendOrg;
+  window.deleteOrg = deleteOrg;
+  window.onMasterSearch = onMasterSearch;
+  window.masterSearch = masterSearch;
+  window.openMasterUsers = openMasterUsers;
+  window.loadMasterUsers = loadMasterUsers;
+  window.masterResetUserPassword = masterResetUserPassword;
 }
 
-export async function openEditOrg(id, name, chatId, industry, size, status) {
+export async function openEditOrg(id, name, chatId, industry, size, status, quota) {
   const m = document.getElementById("edit-org-modal");
   if (!m) return;
   document.getElementById("eo-id").value = id;
@@ -168,6 +181,7 @@ export async function openEditOrg(id, name, chatId, industry, size, status) {
   document.getElementById("eo-industry").value = industry || "";
   document.getElementById("eo-size").value = size || "";
   document.getElementById("eo-status").value = status || "active";
+  document.getElementById("eo-quota").value = quota ?? "";
   m.style.display = "flex";
 }
 
@@ -179,11 +193,15 @@ export async function saveEditOrg() {
   const size = document.getElementById("eo-size").value.trim();
   const status = document.getElementById("eo-status").value.trim();
   if (!name || !chat_id) { toast("Name and Channel ID are required", "err"); return; }
+  const quotaRaw = document.getElementById("eo-quota").value.trim();
+  const body = { name, telegram_chat_id: chat_id, industry, size, status };
+  if (quotaRaw !== "") body.storage_quota_bytes = parseInt(quotaRaw, 10);
+  else body.storage_quota_bytes = null;
   const r = await fetch(`${API}/orgs/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     credentials: "same-origin",
-    body: JSON.stringify({ name, telegram_chat_id: chat_id, industry, size, status }),
+    body: JSON.stringify(body),
   });
   const d = await r.json().catch(() => ({}));
   if (r.ok) {
@@ -204,6 +222,119 @@ export async function resetOrgAdmin(id, name) {
   });
   const d = await r.json().catch(() => ({}));
   if (r.ok) toast(`Admin password reset for ${d.username || name}`, "ok");
+  else toast(d.error || "Reset failed", "err");
+}
+
+export async function toggleSuspendOrg(id, name, status) {
+  const suspend = status !== "suspended";
+  if (!confirm(`${suspend ? "Suspend" : "Reactivate"} organisation "${name}"?`)) return;
+  const r = await fetch(`${API}/orgs/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ status: suspend ? "suspended" : "active" }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (r.ok) { toast(suspend ? `Suspended ${name}` : `Reactivated ${name}`, "ok"); loadOrgs(); }
+  else toast(d.error || "Action failed", "err");
+}
+
+export async function deleteOrg(id, name) {
+  if (!confirm(`Soft-delete organisation "${name}"? Its users will no longer be able to log in. This can be reversed by setting status back to active.`)) return;
+  const r = await fetch(`${API}/orgs/${id}`, { method: "DELETE", credentials: "same-origin" });
+  const d = await r.json().catch(() => ({}));
+  if (r.ok) { toast(`Deleted ${name}`, "ok"); loadOrgs(); }
+  else toast(d.error || "Delete failed", "err");
+}
+
+// ── MASTER GLOBAL SEARCH (M5) ──────────────────────────────────────────────
+let _searchTimer = null;
+export function onMasterSearch() {
+  clearTimeout(_searchTimer);
+  _searchTimer = setTimeout(masterSearch, 250);
+}
+
+export async function masterSearch() {
+  const box = document.getElementById("master-search-input");
+  const out = document.getElementById("master-search-results");
+  if (!out) return;
+  const q = box ? box.value.trim() : "";
+  if (q.length < 2) { out.style.display = "none"; out.innerHTML = ""; return; }
+  const r = await fetch(`${API}/master/search?q=${encodeURIComponent(q)}`, { credentials: "same-origin" });
+  if (!r.ok) { out.style.display = "none"; return; }
+  const d = await r.json();
+  let html = "";
+  if (d.files.length) {
+    html += `<div style="font-size:11px;font-weight:700;color:var(--accent);margin:8px 0 4px;text-transform:uppercase">📄 Files (${d.files.length})</div>`;
+    for (const f of d.files) {
+      html += `<div style="padding:6px 8px;border-radius:8px;background:var(--glass-bg);margin-bottom:4px;font-size:13px">${escapeHtml(f.name)} <span style="color:var(--muted);font-size:11px">· ${escapeHtml(f.org_name)}</span></div>`;
+    }
+  }
+  if (d.users.length) {
+    html += `<div style="font-size:11px;font-weight:700;color:var(--accent);margin:8px 0 4px;text-transform:uppercase">👥 Users (${d.users.length})</div>`;
+    for (const u of d.users) {
+      html += `<div style="padding:6px 8px;border-radius:8px;background:var(--glass-bg);margin-bottom:4px;font-size:13px">${escapeHtml(u.username)} <span class="role-pill ${u.role}" style="cursor:default">${u.role.replace("_"," ")}</span> <span style="color:var(--muted);font-size:11px">· ${escapeHtml(u.org_name)}</span></div>`;
+    }
+  }
+  if (!d.files.length && !d.users.length) html = `<div style="padding:10px;color:var(--muted)">No matches.</div>`;
+  out.innerHTML = html;
+  out.style.display = "block";
+}
+
+// ── MASTER USER MANAGEMENT (M6) ─────────────────────────────────────────────
+export async function openMasterUsers() {
+  const m = document.getElementById("master-users-modal");
+  if (m) m.style.display = "flex";
+  await loadMasterUsers();
+}
+
+export async function loadMasterUsers() {
+  const list = document.getElementById("master-users-list");
+  if (!list) return;
+  const r = await fetch(`${API}/users`, { credentials: "same-origin" });
+  if (!r.ok) { list.innerHTML = `<div style="color:var(--muted)">Master only</div>`; return; }
+  const users = await r.json();
+  list.innerHTML = "";
+  if (!users.length) { list.innerHTML = `<div style="color:var(--muted)">No users.</div>`; return; }
+  const isMaster = users.some(u => u.org_name);
+  if (isMaster) {
+    const byOrg = {};
+    for (const u of users) (byOrg[u.org_name || "—"] = byOrg[u.org_name || "—"] || []).push(u);
+    for (const [org, list2] of Object.entries(byOrg)) {
+      const h = document.createElement("div");
+      h.style.cssText = "font-size:11px;font-weight:700;color:var(--accent);margin:10px 0 4px;text-transform:uppercase";
+      h.textContent = `🏢 ${org} — ${list2.length}`;
+      list.appendChild(h);
+      for (const u of list2) list.appendChild(masterUserRow(u));
+    }
+  } else {
+    for (const u of users) list.appendChild(masterUserRow(u));
+  }
+}
+
+function masterUserRow(u) {
+  const row = document.createElement("div");
+  row.style.cssText = "display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--glass-bg);border:1px solid var(--glass-border);border-radius:10px;margin-bottom:6px";
+  row.innerHTML = `
+    <div style="flex:1;min-width:0">
+      <div style="font-weight:600;color:var(--text)">${escapeHtml(u.username)}</div>
+      <div style="font-size:11px;color:var(--muted)"><span class="role-pill ${u.role}" style="cursor:default">${u.role.replace("_"," ")}</span></div>
+    </div>
+    <button class="btn-sm" onclick="masterResetUserPassword('${u.id}','${escapeHtml(u.username).replace(/'/g, "\\'")}')">Reset password</button>`;
+  return row;
+}
+
+export async function masterResetUserPassword(id, username) {
+  const pw = prompt(`Reset password for "${username}"\n\nEnter new password (min 6 characters):`);
+  if (!pw) return;
+  const r = await fetch(`${API}/users/${id}/reset-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ password: pw }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (r.ok) toast(`Password reset for ${d.username || username}`, "ok");
   else toast(d.error || "Reset failed", "err");
 }
 

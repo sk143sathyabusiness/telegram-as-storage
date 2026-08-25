@@ -41,10 +41,11 @@ def _stats_for_org(sup, org_id):
     folders = sup.table("folders").select("id").eq("org_id", org_id).execute().data
     folder_count = len(folders)
 
-    org = sup.table("organizations").select("name, status, backup_channel_id").eq("id", org_id).maybe_single().execute()
+    org = sup.table("organizations").select("name, status, backup_channel_id, storage_quota_bytes").eq("id", org_id).maybe_single().execute()
     name = org.data["name"] if org and org.data else "—"
     status = org.data.get("status") if org and org.data else "—"
     backup_channel_id = (org.data or {}).get("backup_channel_id")
+    storage_quota_bytes = (org.data or {}).get("storage_quota_bytes")
 
     last_activity = None
     al = sup.table("audit_logs").select("created_at").eq("org_id", org_id).order("created_at", desc=True).limit(1).execute().data
@@ -67,6 +68,7 @@ def _stats_for_org(sup, org_id):
         "last_activity": last_activity,
         "last_backup": last_backup,
         "backup_channel_id": backup_channel_id,
+        "storage_quota_bytes": storage_quota_bytes,
     }
 
 

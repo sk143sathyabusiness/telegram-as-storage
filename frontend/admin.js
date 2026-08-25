@@ -471,6 +471,10 @@ if (typeof window !== "undefined") {
   window.openChangePassword = openChangePassword;
   window.changeMyPassword = changeMyPassword;
   window.runDailyBackup = runDailyBackup;
+  window.loadShares = loadShares;
+  window.revokeShare = revokeShare;
+  window.copyText = copyText;
+  window.loadOrgSettings = loadOrgSettings;
 }
 
 // ── DAILY (ESSENTIAL-ONLY) BACKUP (Phase-1 M8) ────────────────────────────
@@ -512,4 +516,90 @@ export async function changeMyPassword() {
     toast("Password changed", "ok");
     document.getElementById("change-password-modal").style.display = "none";
   } else toast(d.error || "Change failed", "err");
+}
+
+// ── SHARED LINKS (Phase-1 O6) ────────────────────────────────────────────────
+export async function loadShares() {
+  const list = document.getElementById("shares-list");
+  const empty = document.getElementById("empty-shares");
+  if (!list) return;
+  const r = await fetch(API + "/shares", {credentials: "same-origin"});
+  if (!r.ok) { list.innerHTML = `<div style="color:var(--muted)">Failed to load shares</div>`; return; }
+  const shares = await r.json();
+  list.innerHTML = "";
+  if (!shares.length) { if (empty) empty.style.display = ""; return; }
+  if (empty) empty.style.display = "none";
+  for (const s of shares) {
+    const card = document.createElement("div");
+    card.className = "fa-card";
+    card.style.cssText = "display:flex;align-items:center;gap:12px;padding:12px 14px;background:var(--glass-bg);border:1px solid var(--glass-border);border-radius:12px;margin-bottom:8px";
+    const exp = s.expires_at ? new Date(s.expires_at).toLocaleDateString() : "never";
+    const created = s.created_at ? new Date(s.created_at).toLocaleDateString() : "—";
+    card.innerHTML = `
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:600;color:var(--text)">${escapeHtml(s.file_name || "file")}</div>
+        <div style="font-size:11px;color:var(--muted);font-family:var(--mono)">token: ${escapeHtml(String(s.token).slice(0,12))}… · created ${created} · expires ${exp} · downloads ${s.download_count || 0}${s.has_password ? " · 🔒" : ""}</div>
+      </div>
+      <div style="display:flex;gap:6px">
+        <button class="btn-sm" onclick="copyText('${escapeHtml(s.token)}')">Copy link</button>
+        <button class="btn-sm danger" onclick="revokeShare('${s.id}')">Revoke</button>
+      </div>`;
+    list.appendChild(card);
+  }
+}
+
+export async function revokeShare(id) {
+  if (!confirm("Revoke this share link?")) return;
+  const r = await fetch(`${API}/shares/${id}`, {method: "DELETE", credentials: "same-origin"});
+  if (r.ok) { toast("Share revoked", "ok"); loadShares(); }
+  else { const d = await r.json().catch(()=>({})); toast(d.error || "Revoke failed", "err"); }
+}
+
+export async function copyText(txt) {
+  try { await navigator.clipboard.writeText(`${location.origin}/shared/${txt}`); toast("Link copied", "ok"); }
+  catch { toast("Copy failed", "err"); }
+}
+
+// ── ORG SETTINGS (Phase-1 O7) ─────────────────────────────────────────────────
+export async function loadOrgSettings() {
+  const el = document.getElementById("settings-content");
+  if (!el) return;
+  const orgsRes = await fetch(API + "/orgs", {credentials: "same-origin"});
+  const orgs = orgsRes.ok ? await orgsRes.json() : [];
+  const org = Array.isArray(orgs) ? orgs.find(o => o.id === state.currentUser?.org_id) : (orgs.id ? orgs : null);
+  const statsRes = await fetch(API + "/stats", {credentials: "same-origin"});
+  const stats = statsRes.ok ? await statsRes.json() : {};
+  const s = stats.org || stats.totals || {};
+  if (!org) { el.innerHTML = `<div style="color:var(--muted)">No organisation context.</div>`; return; }
+  const used = s.storage_bytes || 0;
+  const quota = s.storage_quota_bytes;
+  let quotaBar = "";
+  if (quota) {
+    const pct = Math.min(100, Math.round((used / quota) * 100));
+    const over = used > quota;
+    quotaBar = `
+      <div style="margin-top:6px;height:8px;background:var(--glass-bg);border-radius:6px;overflow:hidden">
+        <div style="width:${pct}%;height:100%;background:${over ? "var(--danger)" : "var(--accent)"}"></div>
+      </div>
+      <div style="font-size:11px;color:${over ? "var(--danger)" : "var(--muted)"};margin-top:4px">${fmt(used)} / ${fmt(quota)} (${pct}%)</div>`;
+  } else {
+    quotaBar = `<div style="font-size:11px;color:var(--muted);margin-top:4px">${fmt(used)} used · no quota set</div>`;
+  }
+  el.innerHTML = `
+    <div class="fa-card" style="padding:16px;background:var(--glass-bg);border:1px solid var(--glass-border);border-radius:12px">
+      <div style="font-size:13px;color:var(--muted)">Organisation</div>
+      <div style="font-size:18px;font-weight:700;color:var(--text);margin-bottom:10px">${escapeHtml(org.name)}</div>
+      <div style="font-size:12px;color:var(--muted);font-family:var(--mono)">Telegram channel: ${escapeHtml(org.telegram_chat_id || "—")}</div>
+      <div style="font-size:12px;color:var(--muted);font-family:var(--mono)">Backup channel: ${escapeHtml(org.backup_channel_id || "— none —")}</div>
+      <div style="font-size:12px;color:var(--muted);font-family:var(--mono)">Status: ${escapeHtml(org.status || "—")}</div>
+      <hr style="border:none;border-top:1px solid var(--glass-border);margin:12px 0">
+      <div style="font-size:13px;color:var(--muted)">Storage</div>
+      ${quotaBar}
+      <div style="font-size:12px;color:var(--muted);margin-top:6px">📄 ${s.file_count || 0} files · 👥 ${s.user_count || 0} users · 🗂 ${s.folder_count || 0} folders</div>
+      <div style="font-size:12px;color:var(--muted);margin-top:4px">${s.last_backup ? "Last backup " + new Date(s.last_backup).toLocaleDateString() : "No backup yet"}</div>
+      <div style="margin-top:12px;display:flex;gap:8px">
+        <button class="btn-sm" onclick="loadShares()">View share links</button>
+        <button class="btn-sm" onclick="openChangePassword()">Change password</button>
+      </div>
+    </div>`;
 }

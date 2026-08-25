@@ -154,6 +154,26 @@ def api_users_update(user_id):
     return jsonify({"ok": True})
 
 
+@users_bp.route("/api/users/<uuid:user_id>/reset-password", methods=["POST"])
+@login_required
+def api_users_reset_password(user_id):
+    """Master admin resets ANY user's password (Phase-1 M6)."""
+    user = current_user()
+    if user["role"] != "master_admin":
+        return jsonify({"error": "Master admin only"}), 403
+    data = request.get_json(force=True) or {}
+    new_password = str(data.get("password", "")).strip()
+    if len(new_password) < 6:
+        return jsonify({"error": "Password must be at least 6 characters"}), 400
+    sup = get_supabase()
+    target = sup.table("users").select("id, username").eq("id", user_id).maybe_single().execute()
+    if not target or not target.data:
+        return jsonify({"error": "User not found"}), 404
+    sup.table("users").update({"password_hash": generate_password_hash(new_password)}).eq("id", user_id).execute()
+    log_action("master_reset_user_password", target.data["username"], org_id=target.data.get("org_id"))
+    return jsonify({"ok": True, "username": target.data["username"]})
+
+
 @users_bp.route("/api/users/<uuid:user_id>/activity", methods=["GET"])
 @login_required
 def api_user_activity(user_id):

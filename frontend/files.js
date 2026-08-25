@@ -878,7 +878,10 @@ export async function updateStorageMeter() {
     const s = sd.org || sd.totals;
     if (!s) { meter.style.display = "none"; return; }
     document.getElementById("storage-used").textContent = fmt(s.storage_bytes || 0);
-    document.getElementById("storage-files").textContent = `· ${s.file_count || 0} files · ${s.folder_count || 0} folders`;
+    const quota = s.storage_quota_bytes;
+    let extra = `· ${s.file_count || 0} files · ${s.folder_count || 0} folders`;
+    if (quota) extra += ` · quota ${fmt(quota)}`;
+    document.getElementById("storage-files").textContent = extra;
     meter.style.display = "block";
   } catch {
     meter.style.display = "none";

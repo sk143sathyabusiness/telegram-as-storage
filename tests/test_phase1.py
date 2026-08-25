@@ -30,6 +30,7 @@ class _Table:
 
     def select(self, *a): return self
     def eq(self, *a): return self
+    def ilike(self, *a, **k): return self
     def in_(self, *a): return self
     def order(self, *a, **k): return self
     def limit(self, *a): return self
@@ -56,7 +57,7 @@ class _Table:
             return _Result(None, single=None)
         q = self.store.get("_q_" + self.name)
         if q is not None:
-            return _Result(self.store.pop("_q_" + self.name))
+            return _Result(list(q))  # non-consuming copy (re-readable)
         if self.name == "files":
             return _Result([])
         if self.name in ("audit_logs", "backups"):
@@ -243,3 +244,144 @@ def test_bulk_delete(monkeypatch):
         r = c.post("/api/files/bulk-delete", json={"ids": ids})
         assert r.status_code == 200, r.get_json()
         assert r.get_json()["deleted"] == 2
+
+
+# ── SUSPEND / QUOTA / DELETE ORG (M2/M7/M9) ────────────────────────────────────
+def test_suspend_org(monkeypatch):
+    from app import create_app, orgs as orgs_mod
+    app = create_app()
+    fake = _FakeSupabase()
+    fake.store["_q_organizations"] = [{"id": str(uuid.uuid4()), "name": "Acme"}]
+    monkeypatch.setattr(orgs_mod, "get_supabase", lambda: fake)
+    monkeypatch.setattr(orgs_mod, "log_action", lambda *a, **k: None)
+    with app.test_client() as c:
+        _login_session(c, role="master_admin", org_id=None)
+        r = c.put(f"/api/orgs/{uuid.uuid4()}", json={"status": "suspended"})
+        assert r.status_code == 200, r.get_json()
+        assert fake.store["updates_organizations"][0]["status"] == "suspended"
+
+
+def test_set_org_quota(monkeypatch):
+    from app import create_app, orgs as orgs_mod
+    app = create_app()
+    fake = _FakeSupabase()
+    fake.store["_q_organizations"] = [{"id": str(uuid.uuid4()), "name": "Acme"}]
+    monkeypatch.setattr(orgs_mod, "get_supabase", lambda: fake)
+    monkeypatch.setattr(orgs_mod, "log_action", lambda *a, **k: None)
+    with app.test_client() as c:
+        _login_session(c, role="master_admin", org_id=None)
+        r = c.put(f"/api/orgs/{uuid.uuid4()}", json={"storage_quota_bytes": 12345})
+        assert r.status_code == 200, r.get_json()
+        assert fake.store["updates_organizations"][0]["storage_quota_bytes"] == 12345
+
+
+def test_delete_org(monkeypatch):
+    from app import create_app, orgs as orgs_mod
+    app = create_app()
+    fake = _FakeSupabase()
+    fake.store["_q_organizations"] = [{"id": str(uuid.uuid4()), "name": "Acme"}]
+    monkeypatch.setattr(orgs_mod, "get_supabase", lambda: fake)
+    monkeypatch.setattr(orgs_mod, "log_action", lambda *a, **k: None)
+    with app.test_client() as c:
+        _login_session(c, role="master_admin", org_id=None)
+        r = c.delete(f"/api/orgs/{uuid.uuid4()}")
+        assert r.status_code == 200, r.get_json()
+        assert fake.store["updates_organizations"][0]["status"] == "deleted"
+
+
+def test_delete_org_requires_master(monkeypatch):
+    from app import create_app
+    app = create_app()
+    with app.test_client() as c:
+        _login_session(c, role="org_admin", org_id=str(uuid.uuid4()))
+        r = c.delete(f"/api/orgs/{uuid.uuid4()}")
+        assert r.status_code == 403
+
+
+# ── MASTER GLOBAL SEARCH (M5) ──────────────────────────────────────────────────
+def test_master_search(monkeypatch):
+    from app import create_app, master as master_mod
+    app = create_app()
+    fake = _FakeSupabase()
+    oid = str(uuid.uuid4())
+    fake.store["_q_files"] = [{"id": str(uuid.uuid4()), "name": "report.pdf", "org_id": oid, "folder_id": None, "is_deleted": False}]
+    fake.store["_q_users"] = [{"id": str(uuid.uuid4()), "username": "alice", "role": "read_write", "org_id": oid}]
+    fake.store["_q_organizations"] = [{"id": oid, "name": "Acme"}]
+    monkeypatch.setattr(master_mod, "get_supabase", lambda: fake)
+    monkeypatch.setattr(master_mod, "log_action", lambda *a, **k: None)
+    with app.test_client() as c:
+        _login_session(c, role="master_admin", org_id=None)
+        r = c.get("/api/master/search?q=rep")
+        assert r.status_code == 200, r.get_json()
+        d = r.get_json()
+        assert any("report.pdf" in f["name"] for f in d["files"])
+        assert any(u["username"] == "alice" for u in d["users"])
+
+
+def test_master_search_requires_master(monkeypatch):
+    from app import create_app
+    app = create_app()
+    with app.test_client() as c:
+        _login_session(c, role="org_admin", org_id=str(uuid.uuid4()))
+        r = c.get("/api/master/search?q=rep")
+        assert r.status_code == 403
+
+
+# ── MASTER RESET ANY USER PASSWORD (M6) ─────────────────────────────────────────
+def test_reset_any_user_password(monkeypatch):
+    from app import create_app, users as users_mod
+    app = create_app()
+    fake = _FakeSupabase()
+    uid = str(uuid.uuid4())
+    fake.store["_q_users"] = [{"id": uid, "username": "bob", "org_id": str(uuid.uuid4())}]
+    monkeypatch.setattr(users_mod, "get_supabase", lambda: fake)
+    monkeypatch.setattr(users_mod, "log_action", lambda *a, **k: None)
+    with app.test_client() as c:
+        _login_session(c, role="master_admin", org_id=None)
+        r = c.post(f"/api/users/{uid}/reset-password", json={"password": "newpass123"})
+        assert r.status_code == 200, r.get_json()
+        assert fake.store["updates_users"][0]["password_hash"]
+
+
+# ── RENAME FOLDER (O4) ──────────────────────────────────────────────────────────
+def test_rename_folder(monkeypatch):
+    from app import create_app, folders as folders_mod
+    app = create_app()
+    fake = _FakeSupabase()
+    fid = str(uuid.uuid4())
+    oid = str(uuid.uuid4())
+    fake.store["_q_folders"] = [{"id": fid, "name": "Old", "org_id": oid}]
+    monkeypatch.setattr(folders_mod, "get_supabase", lambda: fake)
+    monkeypatch.setattr(folders_mod, "_check_permission", lambda *a, **k: True)
+    monkeypatch.setattr(folders_mod, "_require_active_org", lambda *a, **k: None)
+    monkeypatch.setattr(folders_mod, "log_action", lambda *a, **k: None)
+    with app.test_client() as c:
+        _login_session(c, role="org_admin", org_id=oid)
+        r = c.put(f"/api/folders/{fid}", json={"name": "New"})
+        assert r.status_code == 200, r.get_json()
+        assert fake.store["updates_folders"][0]["name"] == "New"
+
+
+# ── SHARE LINKS (O6) ────────────────────────────────────────────────────────────
+def test_shares_list_and_revoke(monkeypatch):
+    from app import create_app, sharing as sharing_mod
+    app = create_app()
+    fake = _FakeSupabase()
+    oid = str(uuid.uuid4())
+    fid = str(uuid.uuid4())
+    sid = str(uuid.uuid4())
+    fake.store["_q_shared_links"] = [{
+        "id": sid, "token": "tok123", "file_id": fid, "created_at": "2026-01-01T00:00:00",
+        "expires_at": None, "download_count": 3, "password_hash": None,
+        "files": {"name": "doc.pdf", "org_id": oid},
+    }]
+    fake.store["_q_files"] = [{"id": fid, "name": "doc.pdf", "org_id": oid}]
+    monkeypatch.setattr(sharing_mod, "get_supabase", lambda: fake)
+    monkeypatch.setattr(sharing_mod, "log_action", lambda *a, **k: None)
+    with app.test_client() as c:
+        _login_session(c, role="org_admin", org_id=oid)
+        r = c.get("/api/shares")
+        assert r.status_code == 200, r.get_json()
+        assert any(s["id"] == sid for s in r.get_json())
+        r2 = c.delete(f"/api/shares/{sid}")
+        assert r2.status_code == 200, r2.get_json()

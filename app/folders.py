@@ -129,6 +129,28 @@ def api_folders_delete(folder_id):
     return jsonify({"ok": True})
 
 
+@folders_bp.route("/api/folders/<uuid:folder_id>", methods=["PUT"])
+@login_required
+def api_folders_rename(folder_id):
+    """Rename a folder (Phase-1 O4)."""
+    user = current_user()
+    if user["role"] not in ("org_admin", "master_admin"):
+        return jsonify({"error": "Admin only"}), 403
+    data = request.get_json(force=True) or {}
+    name = str(data.get("name", "")).strip()
+    if not name:
+        return jsonify({"error": "Folder name required"}), 400
+    sup = get_supabase()
+    folder = sup.table("folders").select("name, org_id").eq("id", folder_id).maybe_single().execute()
+    if not folder or not folder.data:
+        return jsonify({"error": "Folder not found"}), 404
+    if folder.data["org_id"] != user["org_id"]:
+        return jsonify({"error": "Permission denied"}), 403
+    sup.table("folders").update({"name": name}).eq("id", folder_id).eq("org_id", user["org_id"]).execute()
+    log_action("rename_folder", name)
+    return jsonify({"ok": True, "name": name})
+
+
 # ── Folder permissions ────────────────────────────────────────────────────
 
 @folders_bp.route("/api/folders/permissions/all", methods=["GET"])
