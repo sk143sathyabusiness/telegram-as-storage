@@ -30,12 +30,14 @@ export async function loadOrgs() {
         <div style="font-size:11px;color:var(--muted);font-family:var(--mono)">${escapeHtml(o.id || "")} · <span style="color:${statusColor}">${escapeHtml(o.status || "—")}</span> · chat: ${escapeHtml(o.telegram_chat_id || "—")}</div>
         <div style="font-size:11px;color:var(--muted)">${escapeHtml(o.industry || "")} ${escapeHtml(o.size || "")}</div>
       </div>
-      <div style="display:flex;gap:6px">
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn-sm" onclick="actAsOrg('${o.id}','${escapeHtml(o.name).replace(/'/g, "\\'")}')">Act as</button>
         ${o.status !== "approved" && o.status !== "active" ? `<button class="btn-sm active" onclick="approveOrg('${o.id}')">Approve</button>` : ""}
         ${o.status !== "rejected" ? `<button class="btn-sm danger" onclick="rejectOrg('${o.id}')">Reject</button>` : ""}
       </div>`;
     list.appendChild(card);
   }
+  updateMasterBanner();
 }
 
 export async function approveOrg(orgId) {
@@ -51,8 +53,59 @@ export async function rejectOrg(orgId) {
   else { const d = await r.json().catch(()=>({})); toast(d.error||"Failed","err"); }
 }
 
+export async function actAsOrg(orgId, orgName) {
+  const r = await fetch(`${API}/master/switch-org`, {method:"POST", headers:{"Content-Type":"application/json"}, credentials:"same-origin", body: JSON.stringify({org_id: orgId})});
+  const d = await r.json().catch(()=>({}));
+  if (r.ok) {
+    toast(`Acting as ${orgName || orgId}`);
+    // Persist for getAutoPassphrase and show banner
+    localStorage.setItem("tv_org_id", orgId);
+    localStorage.setItem("tv_act_org_name", orgName || orgId);
+    updateMasterBanner();
+    // Refresh files/folders as that org
+    const folders = await import("./folders.js");
+    await folders.loadFolders();
+    const files = await import("./files.js");
+    files.refreshFiles();
+    window.showView?.("files");
+  } else toast(d.error||"Failed to act as org","err");
+}
+
+export async function clearActAs() {
+  const r = await fetch(`${API}/master/clear`, {method:"POST", credentials:"same-origin"});
+  if (r.ok) {
+    toast("Back to master");
+    localStorage.removeItem("tv_act_org_name");
+    // restore real org (master has none, so clear)
+    const me = await fetch(`${API}/me`, {credentials:"same-origin"}).then(r=>r.json()).catch(()=>null);
+    if (me?.org_id) localStorage.setItem("tv_org_id", me.org_id); else localStorage.removeItem("tv_org_id");
+    updateMasterBanner();
+    window.showView?.("orgs");
+  }
+}
+
+export async function updateMasterBanner() {
+  try {
+    const r = await fetch(`${API}/master/context`, {credentials:"same-origin"});
+    if (!r.ok) return;
+    const d = await r.json();
+    const banner = document.getElementById("master-act-banner");
+    const nameEl = document.getElementById("act-org-name");
+    if (!banner || !nameEl) return;
+    if (d.act_as_org_id) {
+      banner.style.display = "flex";
+      nameEl.textContent = localStorage.getItem("tv_act_org_name") || d.act_as_org_id;
+    } else {
+      banner.style.display = "none";
+    }
+  } catch {}
+}
+
 if (typeof window !== "undefined") {
   window.loadOrgs = loadOrgs;
   window.approveOrg = approveOrg;
   window.rejectOrg = rejectOrg;
+  window.actAsOrg = actAsOrg;
+  window.clearActAs = clearActAs;
+  window.updateMasterBanner = updateMasterBanner;
 }

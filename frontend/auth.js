@@ -116,6 +116,7 @@ export async function doLogin() {
     }
     const orgsNav = document.getElementById("nav-orgs");
     if (orgsNav) orgsNav.style.display = state.currentUser.role === "master_admin" ? "" : "none";
+    import("./orgs.js").then(m=>m.updateMasterBanner?.()).catch(()=>{});
     const folders = await import("./folders.js");
     await folders.loadFolders();
     const files = await import("./files.js");
@@ -138,6 +139,7 @@ export async function logout() {
   state.currentUser = null;
   window.currentUser = null;
   localStorage.removeItem("tv_org_id");
+  localStorage.removeItem("tv_act_org_name");
   _sessionModalShown = false;
   if (_sessionWarnTimer) { clearInterval(_sessionWarnTimer); _sessionWarnTimer = null; }
   const el = document.getElementById("session-timer");
@@ -216,6 +218,7 @@ fetch(API + "/me", {credentials: "same-origin"}).then(async r => {
     }
     const orgsNav = document.getElementById("nav-orgs");
     if (orgsNav) orgsNav.style.display = state.currentUser.role === "master_admin" ? "" : "none";
+    import("./orgs.js").then(m=>m.updateMasterBanner?.()).catch(()=>{});
     const folders = await import("./folders.js");
     await folders.loadFolders();
     const files = await import("./files.js");

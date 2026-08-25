@@ -76,6 +76,10 @@ def create_app() -> Flask:
     from app.bootstrap import bootstrap_bp
     app.register_blueprint(bootstrap_bp)
 
+    # Master acting as org
+    from app.master import master_bp
+    app.register_blueprint(master_bp)
+
     # ── Minimal routes required for Task 1 tests ──────────────────────
 
     @app.route("/")

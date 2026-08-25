@@ -51,11 +51,17 @@ def login_required(f):
 def current_user():
     if "user_id" not in session:
         return None
+    # Master can act as org admin via session["act_as_org_id"]
+    org_id = session.get("org_id")
+    if session.get("role") == "master_admin" and session.get("act_as_org_id"):
+        org_id = session.get("act_as_org_id")
     return {
         "id": session["user_id"],
-        "org_id": session["org_id"],
+        "org_id": org_id,
         "role": session["role"],
         "username": session.get("username"),
+        "real_org_id": session.get("org_id"),
+        "act_as_org_id": session.get("act_as_org_id"),
     }
 
 

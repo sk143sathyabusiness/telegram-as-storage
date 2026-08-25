@@ -7,7 +7,7 @@
 <title>TeamVault</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=10">
+<link rel="stylesheet" href="style.css?v=11">
 </head>
 <body>
 
@@ -54,6 +54,10 @@
     <span class="topbar-role" id="topbar-role"></span>
     <span class="session-timer" id="session-timer" title="Idle session timeout"></span>
     <button class="btn-sm" onclick="logout()">Sign out</button>
+  </div>
+  <div id="master-act-banner" style="display:none; padding:8px 16px; background:rgba(99,102,241,.12); border-bottom:1px solid rgba(99,102,241,.3); font-size:12px; align-items:center; gap:8px;">
+    <span>🛡️ Acting as org: <strong id="act-org-name">—</strong></span>
+    <button class="btn-sm" onclick="clearActAs()">Exit to master</button>
   </div>
 
   <div class="body">
@@ -549,12 +553,12 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.8.0/mammoth.browser.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-<script type="module" src="frontend/api.js?v=10"></script>
-<script type="module" src="frontend/auth.js?v=10"></script>
-<script type="module" src="frontend/folders.js?v=10"></script>
-<script type="module" src="frontend/files.js?v=10"></script>
-<script type="module" src="frontend/sharing.js?v=10"></script>
-<script type="module" src="frontend/admin.js?v=10"></script>
-<script type="module" src="frontend/orgs.js?v=10"></script>
+<script type="module" src="frontend/api.js?v=11"></script>
+<script type="module" src="frontend/auth.js?v=11"></script>
+<script type="module" src="frontend/folders.js?v=11"></script>
+<script type="module" src="frontend/files.js?v=11"></script>
+<script type="module" src="frontend/sharing.js?v=11"></script>
+<script type="module" src="frontend/admin.js?v=11"></script>
+<script type="module" src="frontend/orgs.js?v=11"></script>
 </body>
 </html>
