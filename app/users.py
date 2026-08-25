@@ -23,6 +23,21 @@ users_bp = Blueprint("users", __name__)
 def api_users_get():
     user = current_user()
     sup = get_supabase()
+    is_master_global = user["role"] == "master_admin" and not user["org_id"]
+    if is_master_global:
+        data = sup.table("users").select("id, username, role, created_at, org_id").order("username").execute().data
+        # Enrich with org names
+        org_ids = list(set(r["org_id"] for r in data if r.get("org_id")))
+        org_map = {}
+        if org_ids:
+            orgs = sup.table("organizations").select("id, name").in_("id", org_ids).execute().data
+            org_map = {o["id"]: o["name"] for o in orgs}
+        result = []
+        for r in data:
+            d = dict(r)
+            d["org_name"] = org_map.get(r.get("org_id"), "—" if not r.get("org_id") else str(r.get("org_id"))[:8])
+            result.append(d)
+        return jsonify(result)
     data = sup.table("users").select("id, username, role, created_at").eq("org_id", user["org_id"]).order("username").execute().data
     return jsonify([dict(r) for r in data])
 
@@ -34,17 +49,28 @@ def api_users_stats():
     if user["role"] not in ("org_admin", "master_admin"):
         return jsonify({"error": "Admin only"}), 403
     sup = get_supabase()
-    all_users = sup.table("users").select("id, role, created_at").eq("org_id", user["org_id"]).execute().data
+    is_master_global = user["role"] == "master_admin" and not user["org_id"]
+    if is_master_global:
+        all_users = sup.table("users").select("id, role, created_at, org_id").execute().data
+        # For master global, active is across all orgs but we return global
+        week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
+        month_ago = (datetime.utcnow() - timedelta(days=30)).isoformat()
+        week_ago_count = sum(1 for u in all_users if u.get("created_at", "") >= week_ago)
+        month_ago_count = sum(1 for u in all_users if u.get("created_at", "") >= month_ago)
+        # active across all
+        logs = sup.table("audit_logs").select("actor_id").gte("created_at", week_ago).execute().data
+    else:
+        all_users = sup.table("users").select("id, role, created_at").eq("org_id", user["org_id"]).execute().data
+        week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
+        month_ago = (datetime.utcnow() - timedelta(days=30)).isoformat()
+        week_ago_count = sum(1 for u in all_users if u.get("created_at", "") >= week_ago)
+        month_ago_count = sum(1 for u in all_users if u.get("created_at", "") >= month_ago)
+        logs = sup.table("audit_logs").select("actor_id").eq("org_id", user["org_id"]).gte("created_at", week_ago).execute().data
     total = len(all_users)
     by_role = {}
     for u in all_users:
         r = u["role"]
         by_role[r] = by_role.get(r, 0) + 1
-    week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
-    month_ago = (datetime.utcnow() - timedelta(days=30)).isoformat()
-    week_ago_count = sum(1 for u in all_users if u.get("created_at", "") >= week_ago)
-    month_ago_count = sum(1 for u in all_users if u.get("created_at", "") >= month_ago)
-    logs = sup.table("audit_logs").select("actor_id").eq("org_id", user["org_id"]).gte("created_at", week_ago).execute().data
     active_actor_ids = set(l["actor_id"] for l in logs if l.get("actor_id"))
     return jsonify({
         "total": total,

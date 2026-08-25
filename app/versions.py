@@ -22,11 +22,16 @@ def api_versions(file_id):
     sup = get_supabase()
     user = current_user()
     file_check = sup.table("files").select("org_id, folder_id").eq("id", file_id).maybe_single().execute()
-    if not file_check or not file_check.data or file_check.data["org_id"] != user["org_id"]:
+    if not file_check or not file_check.data:
         return jsonify({"error": "Permission denied"}), 403
-    perm = _check_permission(sup, user["id"], user["org_id"], file_check.data.get("folder_id"))
-    if not perm:
+    # Master without act_as can view any org's versions
+    is_master_global = user["role"] == "master_admin" and not user["org_id"]
+    if not is_master_global and file_check.data["org_id"] != user["org_id"]:
         return jsonify({"error": "Permission denied"}), 403
+    if not is_master_global:
+        perm = _check_permission(sup, user["id"], user["org_id"], file_check.data.get("folder_id"))
+        if not perm:
+            return jsonify({"error": "Permission denied"}), 403
     rows = sup.table("file_versions").select("*").eq("file_id", file_id).order("version_number", desc=True).execute().data
     result = []
     for r in rows:
@@ -47,11 +52,15 @@ def api_restore_version(file_id, version_no):
         return jsonify({"error": "Permission denied"}), 403
     sup = get_supabase()
     f = sup.table("files").select("name, folder_id, org_id").eq("id", file_id).maybe_single().execute()
-    if not f or not f.data or f.data["org_id"] != user["org_id"]:
+    if not f or not f.data:
         return jsonify({"error": "Permission denied"}), 403
-    perm = _check_permission(sup, user["id"], user["org_id"], f.data.get("folder_id"))
-    if not perm or perm == "read_only":
+    is_master_global = user["role"] == "master_admin" and not user["org_id"]
+    if not is_master_global and f.data["org_id"] != user["org_id"]:
         return jsonify({"error": "Permission denied"}), 403
+    if not is_master_global:
+        perm = _check_permission(sup, user["id"], user["org_id"], f.data.get("folder_id"))
+        if not perm or perm == "read_only":
+            return jsonify({"error": "Permission denied"}), 403
     ver = sup.table("file_versions").select("id").eq("file_id", file_id).eq("version_number", version_no).maybe_single().execute()
     if not ver or not ver.data:
         return jsonify({"error": "Version not found"}), 404
@@ -68,11 +77,23 @@ def api_restore_version(file_id, version_no):
 def api_versions_all():
     user = current_user()
     sup = get_supabase()
-    files_data = sup.table("files").select("id, name").eq("org_id", user["org_id"]).eq("is_deleted", False).execute().data
+    is_master_global = user["role"] == "master_admin" and not user["org_id"]
+    if is_master_global:
+        files_data = sup.table("files").select("id, name, org_id").eq("is_deleted", False).execute().data
+    else:
+        files_data = sup.table("files").select("id, name, org_id").eq("org_id", user["org_id"]).eq("is_deleted", False).execute().data
     file_ids = [f["id"] for f in files_data]
     file_map = {f["id"]: f["name"] for f in files_data}
+    file_org_map = {f["id"]: f.get("org_id") for f in files_data}
     if not file_ids:
         return jsonify([])
+    # Also fetch org names for master aggregated view
+    org_map = {}
+    if is_master_global:
+        org_ids = list(set(f.get("org_id") for f in files_data if f.get("org_id")))
+        if org_ids:
+            orgs = sup.table("organizations").select("id, name").in_("id", org_ids).execute().data
+            org_map = {o["id"]: o["name"] for o in orgs}
     versions = sup.table("file_versions").select("*").in_("file_id", file_ids).order("uploaded_at", desc=True).limit(500).execute().data
     uploader_ids = list(set(v["uploaded_by"] for v in versions if v.get("uploaded_by")))
     users_data = {}
@@ -85,5 +106,9 @@ def api_versions_all():
         d["filename"] = file_map.get(v["file_id"])
         d["uploaded_by_name"] = users_data.get(v["uploaded_by"])
         d["is_current"] = bool(v["is_current"])
+        if is_master_global:
+            org_id = file_org_map.get(v["file_id"])
+            d["org_id"] = org_id
+            d["org_name"] = org_map.get(org_id, str(org_id)[:8] if org_id else "—")
         result.append(d)
     return jsonify(result)

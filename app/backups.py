@@ -35,8 +35,20 @@ def api_backup_list():
     if user["role"] not in ("org_admin", "master_admin"):
         return jsonify({"error": "Admin only"}), 403
     sup = get_supabase()
+    is_master_global = user["role"] == "master_admin" and not user["org_id"]
     try:
-        rows = sup.table("backups").select("id,name,size_bytes,created_at,created_by").eq("org_id", user["org_id"]).order("created_at", desc=True).execute().data
+        if is_master_global:
+            rows = sup.table("backups").select("id,name,size_bytes,created_at,created_by,org_id").order("created_at", desc=True).execute().data
+            # Enrich with org names
+            org_ids = list(set(r["org_id"] for r in rows if r.get("org_id")))
+            org_map = {}
+            if org_ids:
+                orgs = sup.table("organizations").select("id, name").in_("id", org_ids).execute().data
+                org_map = {o["id"]: o["name"] for o in orgs}
+            for r in rows:
+                r["org_name"] = org_map.get(r.get("org_id"), str(r.get("org_id"))[:8] if r.get("org_id") else "—")
+        else:
+            rows = sup.table("backups").select("id,name,size_bytes,created_at,created_by").eq("org_id", user["org_id"]).order("created_at", desc=True).execute().data
     except Exception as e:
         if "PGRST205" in str(e):
             return jsonify({"error": "Backups table not set up. Run the migration SQL first.", "sql_hint": True}), 503

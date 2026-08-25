@@ -22,7 +22,18 @@ def api_logs_get():
         return jsonify([])
     limit = request.args.get("limit", 300, type=int)
     sup = get_supabase()
-    data = sup.table("audit_logs").select("*").eq("org_id", user["org_id"]).order("created_at", desc=True).limit(limit).execute().data
+    is_master_global = user["role"] == "master_admin" and not user["org_id"]
+    if is_master_global:
+        data = sup.table("audit_logs").select("*").order("created_at", desc=True).limit(limit).execute().data
+        # Enrich with org names
+        org_ids = list(set(r["org_id"] for r in data if r.get("org_id")))
+        org_map = {}
+        if org_ids:
+            orgs = sup.table("organizations").select("id, name").in_("id", org_ids).execute().data
+            org_map = {o["id"]: o["name"] for o in orgs}
+    else:
+        data = sup.table("audit_logs").select("*").eq("org_id", user["org_id"]).order("created_at", desc=True).limit(limit).execute().data
+        org_map = {}
     actor_ids = list(set(r["actor_id"] for r in data if r.get("actor_id")))
     user_map = {}
     if actor_ids:
@@ -35,6 +46,8 @@ def api_logs_get():
         d["user_id"] = d.pop("actor_id")
         d["role"] = d.pop("actor_role")
         d["username"] = user_map.get(d["user_id"])
+        if is_master_global:
+            d["org_name"] = org_map.get(r.get("org_id"), str(r.get("org_id"))[:8] if r.get("org_id") else "—")
         details = d.pop("details", None)
         if isinstance(details, str):
             try:

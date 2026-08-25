@@ -3,12 +3,35 @@ import { API, state, toast, fmt, fmtDate, fmtLogDate, escapeHtml, openModal, clo
 
 // ── LOGS ───────────────────────────────────────────────────────────────────
 export async function loadLogs() {
-  const r = await fetch(API + "/logs?limit=300");
+  const r = await fetch(API + "/logs?limit=300", {credentials: "same-origin"});
   if (!r.ok) return;
   const logs = await r.json();
   const list = document.getElementById("log-list");
   if (!list) return;
   list.innerHTML = "";
+  // Group by org if master global (has org_name)
+  const isMaster = logs.some(l => l.org_name);
+  if (isMaster && logs.length) {
+    const byOrg = {};
+    for (const l of logs) { const k = l.org_name || "—"; (byOrg[k] = byOrg[k] || []).push(l); }
+    for (const [org, items] of Object.entries(byOrg)) {
+      const header = document.createElement("div");
+      header.style.cssText = "font-size:11px;font-weight:700;color:var(--accent);margin:14px 0 6px;text-transform:uppercase;letter-spacing:.06em";
+      header.textContent = `🏢 ${org} — ${items.length} events`;
+      list.appendChild(header);
+      for (const l of items) {
+        const row = document.createElement("div");
+        row.className = "log-row";
+        row.innerHTML = `
+          <span class="log-ts">${fmtLogDate(l.ts)}</span>
+          <span class="log-user">${escapeHtml(l.username || "—")}</span>
+          <span class="log-action log-${escapeHtml(l.action)}">${escapeHtml(l.action)}</span>
+          <span class="log-detail">${escapeHtml([l.target, l.detail].filter(Boolean).join(" · "))}</span>`;
+        list.appendChild(row);
+      }
+    }
+    return;
+  }
   for (const l of logs) {
     const row = document.createElement("div");
     row.className = "log-row";
@@ -39,9 +62,9 @@ export function switchTeamTab(tab) {
 
 export async function loadUserManagement() {
   const [usersRes, statsRes, foldersRes] = await Promise.all([
-    fetch(API + "/users"),
-    fetch(API + "/users/stats"),
-    fetch(API + "/folders"),
+    fetch(API + "/users", {credentials:"same-origin"}),
+    fetch(API + "/users/stats", {credentials:"same-origin"}),
+    fetch(API + "/folders", {credentials:"same-origin"}),
   ]);
   if (usersRes.ok) _umUsers = await usersRes.json();
   if (foldersRes.ok) _umFolders = await foldersRes.json();
@@ -73,6 +96,37 @@ export function renderUserTable(users) {
   tbody.innerHTML = "";
   if (!users.length) { empty.style.display = ""; return; }
   empty.style.display = "none";
+  const isMaster = users.some(u => u.org_name);
+  if (isMaster) {
+    const byOrg = {};
+    for (const u of users) { const k = u.org_name || "—"; (byOrg[k] = byOrg[k] || []).push(u); }
+    for (const [org, list] of Object.entries(byOrg)) {
+      const header = document.createElement("tr");
+      header.innerHTML = `<td colspan="5" style="font-size:11px;font-weight:700;color:var(--accent);padding:10px 0 6px;text-transform:uppercase">🏢 ${escapeHtml(org)} — ${list.length} users</td>`;
+      tbody.appendChild(header);
+      for (let i = 0; i < list.length; i++) {
+        const u = list[i];
+        const isSelf = u.id === state.currentUser?.id;
+        const tr = document.createElement("tr");
+        tr.className = "row-enter";
+        tr.style.animationDelay = `${i * 30}ms`;
+        tr.innerHTML = `
+          <td><div class="um-user-cell"><div class="um-avatar" style="background:${isSelf ? 'linear-gradient(135deg,var(--accent),var(--violet))' : 'var(--glass-bg)'}">${escapeHtml(u.username.charAt(0).toUpperCase())}</div><div><div class="um-user-name">${escapeHtml(u.username)}${isSelf ? ' <span class="um-you-badge">you</span>' : ''}</div></div></div></td>
+          <td><span class="role-pill ${escapeHtml(u.role)}" style="cursor:default">${escapeHtml(u.role.replace("_"," "))}</span></td>
+          <td><span class="file-meta">${fmtDate(u.created_at)}</span></td>
+          <td><span class="file-meta" id="um-activity-${u.id}">—</span></td>
+          <td><div class="action-row">
+            <button class="btn-sm" onclick="showEditUserModal('${u.id}','${escapeHtml(u.username)}','${u.role}')" title="Edit user">Edit</button>
+            <button class="btn-sm" onclick="showUserActivity('${u.id}','${escapeHtml(u.username)}')" title="View activity">Activity</button>
+            <button class="btn-sm" onclick="showUserPermissions('${u.id}','${escapeHtml(u.username)}')" title="Manage permissions">Perms</button>
+            ${!isSelf ? `<button class="btn-sm danger" onclick="deleteUser('${u.id}','${escapeHtml(u.username)}')" title="Remove user">Remove</button>` : ''}
+          </div></td>`;
+        tbody.appendChild(tr);
+      }
+    }
+    loadUserActivitySummaries(users);
+    return;
+  }
   for (let i = 0; i < users.length; i++) {
     const u = users[i];
     const isSelf = u.id === state.currentUser?.id;
@@ -284,7 +338,7 @@ export async function revokeFolderAccess(folderId, permId, username) {
 
 // ── BACKUP ──────────────────────────────────────────────────────────────────
 export async function loadBackups() {
-  const r = await fetch(API + "/backup/list");
+  const r = await fetch(API + "/backup/list", {credentials:"same-origin"});
   if (!r.ok) { const d = await r.json().catch(() => ({})); if (d.error) toast(d.error, "err"); return; }
   const backups = await r.json();
   const list = document.getElementById("backup-list");
@@ -293,6 +347,25 @@ export async function loadBackups() {
   list.innerHTML = "";
   if (!backups.length) { empty.style.display = ""; return; }
   empty.style.display = "none";
+  const isMaster = backups.some(b => b.org_name);
+  if (isMaster) {
+    const byOrg = {};
+    for (const b of backups) { const k = b.org_name || "—"; (byOrg[k] = byOrg[k] || []).push(b); }
+    for (const [org, items] of Object.entries(byOrg)) {
+      const header = document.createElement("div");
+      header.style.cssText = "font-size:11px;font-weight:700;color:var(--accent);margin:14px 0 6px;text-transform:uppercase";
+      header.textContent = `🏢 ${org} — ${items.length} backups`;
+      list.appendChild(header);
+      for (const b of items) {
+        const card = document.createElement("div");
+        card.className = "trash-card";
+        const dt = b.created_at ? fmtDate(b.created_at) : "—";
+        card.innerHTML = `<span style="flex:1"><strong style="font-family:var(--mono);font-size:12px">${escapeHtml(b.name)}</strong><span style="font-size:12px;color:var(--muted);margin-left:10px">${fmt(b.size_bytes)} · ${escapeHtml(dt)}</span></span><div class="action-row"><button class="btn-sm" onclick="downloadBackup('${escapeHtml(b.name).replace(/'/g,"\\'")}')">↓ Download</button><button class="btn-sm" onclick="restoreBackup('${escapeHtml(b.name).replace(/'/g,"\\'")}')">↩ Restore</button><button class="btn-sm danger" onclick="deleteBackup('${escapeHtml(b.name).replace(/'/g,"\\'")}')">🗑</button></div>`;
+        list.appendChild(card);
+      }
+    }
+    return;
+  }
   for (const b of backups) {
     const card = document.createElement("div");
     card.className = "trash-card";
@@ -326,7 +399,7 @@ export async function deleteBackup(name) {
 
 // ── VERSIONS ALL ────────────────────────────────────────────────────────────
 export async function loadAllVersions() {
-  const r = await fetch(API + "/versions/all");
+  const r = await fetch(API + "/versions/all", {credentials:"same-origin"});
   if (!r.ok) return;
   const versions = await r.json();
   const list = document.getElementById("versions-all-list");
@@ -335,6 +408,24 @@ export async function loadAllVersions() {
   list.innerHTML = "";
   if (!versions.length) { empty.style.display = ""; return; }
   empty.style.display = "none";
+  const isMaster = versions.some(v => v.org_name);
+  if (isMaster) {
+    const byOrg = {};
+    for (const v of versions) { const k = v.org_name || "—"; (byOrg[k] = byOrg[k] || []).push(v); }
+    for (const [org, items] of Object.entries(byOrg)) {
+      const header = document.createElement("div");
+      header.style.cssText = "font-size:11px;font-weight:700;color:var(--accent);margin:14px 0 6px;text-transform:uppercase";
+      header.textContent = `🏢 ${org} — ${items.length} versions`;
+      list.appendChild(header);
+      for (const v of items) {
+        const card = document.createElement("div");
+        card.className = "version-card" + (v.is_current ? " current" : "");
+        card.innerHTML = `<div class="version-no">v${v.version_number}</div><div class="version-info"><div class="size"><strong>${escapeHtml(v.filename)}</strong> · ${fmt(v.size_bytes)}</div><div class="who">by ${escapeHtml(v.uploaded_by_name || "—")} · ${fmtDate(v.uploaded_at)}</div><div class="version-sha">${escapeHtml(v.sha256 || "—")}</div></div><div class="action-row" style="flex-shrink:0">${v.is_current ? `<span class="current-pill">Current</span>` : ""}<button class="btn-sm" onclick="openVersions('${v.file_id}','${escapeHtml((v.filename||'')).replace(/'/g,"\\'")}')">Open</button></div>`;
+        list.appendChild(card);
+      }
+    }
+    return;
+  }
   for (const v of versions) {
     const card = document.createElement("div");
     card.className = "version-card" + (v.is_current ? " current" : "");
