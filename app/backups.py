@@ -109,8 +109,15 @@ def _make_backup(sup, org_id, user, essential_only=False):
         tables_data["files"] = [dict(r) for r in files_rows]
         tables_data["file_versions"] = [dict(r) for r in versions_rows]
     else:
-        tables_data["files"] = [dict(r) for r in sup.table("files").select("*").eq("org_id", org_id).execute().data]
-        tables_data["file_versions"] = [dict(r) for r in sup.table("file_versions").select("*").eq("org_id", org_id).execute().data]
+        files_rows = sup.table("files").select("*").eq("org_id", org_id).execute().data
+        tables_data["files"] = [dict(r) for r in files_rows]
+        file_ids = [f["id"] for f in files_rows]
+        versions_rows = []
+        if file_ids:
+            for i in range(0, len(file_ids), 100):
+                batch = file_ids[i:i + 100]
+                versions_rows.extend(sup.table("file_versions").select("*").in_("file_id", batch).execute().data)
+        tables_data["file_versions"] = [dict(r) for r in versions_rows]
 
     backup_payload = {
         "version": 1,
@@ -223,10 +230,19 @@ def api_backup_restore(name):
         rows = tables.get(table_name, [])
         if not rows:
             continue
-        try:
-            sup.table(table_name).delete().eq("org_id", org_id).execute()
-        except Exception:
-            pass
+        # file_versions has no org_id column — delete by file_id instead
+        if table_name == "file_versions":
+            fids = [r.get("file_id") for r in rows if r.get("file_id")]
+            if fids:
+                try:
+                    sup.table("file_versions").delete().in_("file_id", fids).execute()
+                except Exception as e:
+                    print(f"[BACKUP] Warning: could not pre-delete file_versions: {e}")
+        else:
+            try:
+                sup.table(table_name).delete().eq("org_id", org_id).execute()
+            except Exception:
+                pass
         for row in rows:
             row.pop("id", None)
             row.pop("created_at", None)
