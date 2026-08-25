@@ -88,10 +88,11 @@ def api_login():
         return jsonify({"error": "Invalid credentials"}), 401
     _login_rate_limit_register_success(rl_key)
 
-    # Block logins for orgs that are not active.
-    org = sup.table("organizations").select("status").eq("id", user["org_id"]).maybe_single().execute()
-    if not org or not org.data or org.data["status"] != "active":
-        return jsonify({"error": "Account is not active. Contact an administrator."}), 403
+    # Block logins for orgs that are not active — master_admin is global (org_id NULL) and bypasses
+    if user["role"] != "master_admin" and user["org_id"]:
+        org = sup.table("organizations").select("status").eq("id", user["org_id"]).maybe_single().execute()
+        if not org or not org.data or org.data["status"] != "active":
+            return jsonify({"error": "Account is not active. Contact an administrator."}), 403
 
     session["user_id"] = user["id"]
     session["org_id"] = user["org_id"]

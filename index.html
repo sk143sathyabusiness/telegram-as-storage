@@ -7,7 +7,7 @@
 <title>TeamVault</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=9">
+<link rel="stylesheet" href="style.css?v=10">
 </head>
 <body>
 
@@ -79,6 +79,9 @@
         </div>
         <div class="sidebar-item" id="nav-backup" onclick="showView('backup')">
           <span class="icon">💾</span> Backup
+        </div>
+        <div class="sidebar-item" id="nav-orgs" onclick="showView('orgs')" style="display:none">
+          <span class="icon">🏢</span> Organisations
         </div>
       </div>
 
@@ -271,6 +274,21 @@
           <div class="empty-state" id="empty-backup" style="display:none">
             <div class="empty-icon">💾</div>
             No backups yet. Create your first backup above.
+          </div>
+        </div>
+      </div>
+
+      <!-- organisations panel (master_admin only) -->
+      <div id="view-orgs" style="display:none">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">🏢 Organisations</div>
+            <button class="btn-sm" onclick="loadOrgs()">↻ Refresh</button>
+          </div>
+          <div id="orgs-list"></div>
+          <div class="empty-state" id="empty-orgs" style="display:none">
+            <div class="empty-icon">🏢</div>
+            No organisations yet.
           </div>
         </div>
       </div>
@@ -531,11 +549,12 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.8.0/mammoth.browser.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-<script type="module" src="frontend/api.js?v=9"></script>
-<script type="module" src="frontend/auth.js?v=9"></script>
-<script type="module" src="frontend/folders.js?v=9"></script>
-<script type="module" src="frontend/files.js?v=9"></script>
-<script type="module" src="frontend/sharing.js?v=9"></script>
-<script type="module" src="frontend/admin.js?v=9"></script>
+<script type="module" src="frontend/api.js?v=10"></script>
+<script type="module" src="frontend/auth.js?v=10"></script>
+<script type="module" src="frontend/folders.js?v=10"></script>
+<script type="module" src="frontend/files.js?v=10"></script>
+<script type="module" src="frontend/sharing.js?v=10"></script>
+<script type="module" src="frontend/admin.js?v=10"></script>
+<script type="module" src="frontend/orgs.js?v=10"></script>
 </body>
 </html>

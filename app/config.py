@@ -68,6 +68,10 @@ else:
         SECRET_KEY = key
         print("[INFO] Generated new .secret_key (store securely; overrides FLASK_SECRET_KEY if file exists).")
 
+# ── Master admin bootstrap ────────────────────────────────────────────
+MASTER_ADMIN_USERNAME = (os.getenv("MASTER_ADMIN_USERNAME") or "admin").strip()
+MASTER_ADMIN_BOOTSTRAP_PASSWORD = (os.getenv("MASTER_ADMIN_BOOTSTRAP_PASSWORD") or "").strip()
+
 # ── Share-link password salt ────────────────────────────────────────────
 # PBKDF2 salt for hash_share_password. Falls back to built-in static value
 # when ENCRYPTION_VERIFIER_SALT is not set (legacy links). We also keep the

@@ -114,6 +114,8 @@ export async function doLogin() {
       document.getElementById("nav-versions-all").style.display = "none";
       document.getElementById("nav-backup").style.display = "none";
     }
+    const orgsNav = document.getElementById("nav-orgs");
+    if (orgsNav) orgsNav.style.display = state.currentUser.role === "master_admin" ? "" : "none";
     const folders = await import("./folders.js");
     await folders.loadFolders();
     const files = await import("./files.js");
@@ -212,6 +214,8 @@ fetch(API + "/me", {credentials: "same-origin"}).then(async r => {
       document.getElementById("nav-versions-all").style.display = "none";
       document.getElementById("nav-backup").style.display = "none";
     }
+    const orgsNav = document.getElementById("nav-orgs");
+    if (orgsNav) orgsNav.style.display = state.currentUser.role === "master_admin" ? "" : "none";
     const folders = await import("./folders.js");
     await folders.loadFolders();
     const files = await import("./files.js");

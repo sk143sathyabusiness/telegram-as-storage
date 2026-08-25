@@ -122,7 +122,7 @@ if (typeof document !== "undefined") {
 // ── VIEW SWITCHING ──────────────────────────────────────────────────────────
 export function showView(name) {
   state.currentView = name;
-  const views = ["files", "versions", "versions-all", "trash", "logs", "users", "backup"];
+  const views = ["files", "versions", "versions-all", "trash", "logs", "users", "backup", "orgs"];
   views.forEach((v) => {
     const el = document.getElementById(`view-${v}`);
     if (el) {
@@ -137,7 +137,7 @@ export function showView(name) {
       }
     }
   });
-  const navs = ["files", "trash", "logs", "users", "versions-all", "backup"];
+  const navs = ["files", "trash", "logs", "users", "versions-all", "backup", "orgs"];
   navs.forEach((v) => {
     document.getElementById(`nav-${v}`)?.classList.toggle("active", v === name);
   });
@@ -147,6 +147,7 @@ export function showView(name) {
   if (name === "users") import("./admin.js").then(m => m.loadUserManagement?.());
   if (name === "versions-all") import("./admin.js").then(m => m.loadAllVersions?.());
   if (name === "backup") import("./admin.js").then(m => m.loadBackups?.());
+  if (name === "orgs") import("./orgs.js").then(m => m.loadOrgs?.());
   const panel = document.getElementById(`view-${name}`);
   if (panel) revealOnScroll(panel);
 }
