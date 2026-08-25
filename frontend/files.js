@@ -252,8 +252,10 @@ function renderFileCard(f, v, index) {
   card.dataset.id = f.id;
   card.dataset.ext = f.name.split(".").pop().toLowerCase();
   card.style.animationDelay = `${index * 40}ms`;
+  const selChk = canDelete ? `<input type="checkbox" class="file-select" data-id="${f.id}" onclick="event.stopPropagation(); toggleFileSelect('${f.id}', this)" style="position:absolute;top:6px;left:6px;width:16px;height:16px;z-index:6;accent-color:var(--accent);cursor:pointer">` : "";
   card.innerHTML = `
-    <div class="file-thumb-wrap" onclick="previewFile('${f.id}','${safeName}','${v ? v.size_bytes : 0}')" style="cursor:pointer">
+    <div class="file-thumb-wrap" onclick="previewFile('${f.id}','${safeName}','${v ? v.size_bytes : 0}')" style="cursor:pointer;position:relative">
+      ${selChk}
       <img class="file-thumb" data-fileid="${f.id}" alt="${escapeHtml(f.name)}" style="display:none">
       <div class="file-thumb-icon">${icon}</div>
       <div class="card-menu" onclick="event.stopPropagation()">
@@ -312,6 +314,8 @@ async function runFileSearch(q) {
 
 export async function refreshFiles() {
   if (_fileSearchActive) return;
+  _selected.clear();
+  updateBulkBar();
   if (document.getElementById("folder-title")) document.getElementById("folder-title").textContent = state.currentFolderName;
   const fid = state.currentFolderId !== null ? `folder_id=${state.currentFolderId}` : "folder_id=";
   const r = await fetch(`${API}/files?${fid}`, {credentials:"same-origin"});
@@ -323,6 +327,7 @@ export async function refreshFiles() {
   if (grid) grid.innerHTML = "";
   if (tbody) tbody.innerHTML = "";
   hideSkeleton();
+  updateStorageMeter();
   if (!files.length) { empty.style.display = ""; return; }
   empty.style.display = "none";
   for (let i = 0; i < files.length; i++) {
@@ -838,6 +843,104 @@ document.getElementById("file-grid")?.addEventListener("dblclick", e => {
   if (id) { const name = card.querySelector(".file-card-name")?.textContent || ""; previewFile(id, name, 0); }
 });
 
+// ── BULK OPERATIONS (Phase-1 O3) ─────────────────────────────────────────────
+const _selected = new Set();
+
+export function toggleFileSelect(fileId, checkbox) {
+  if (checkbox.checked) _selected.add(fileId);
+  else _selected.delete(fileId);
+  updateBulkBar();
+}
+
+export function updateBulkBar() {
+  const bar = document.getElementById("bulk-bar");
+  if (!bar) return;
+  const count = _selected.size;
+  bar.style.display = count > 0 ? "flex" : "none";
+  const lbl = document.getElementById("bulk-count");
+  if (lbl) lbl.textContent = count;
+}
+
+export function clearBulkSelection() {
+  _selected.clear();
+  updateBulkBar();
+}
+
+export async function updateStorageMeter() {
+  const meter = document.getElementById("storage-meter");
+  if (!meter) return;
+  const showFor = state.currentUser && (state.currentUser.role === "org_admin" || state.currentUser.role === "master_admin");
+  if (!showFor) { meter.style.display = "none"; return; }
+  try {
+    const sr = await fetch(`${API}/stats`, { credentials: "same-origin" });
+    if (!sr.ok) { meter.style.display = "none"; return; }
+    const sd = await sr.json();
+    const s = sd.org || sd.totals;
+    if (!s) { meter.style.display = "none"; return; }
+    document.getElementById("storage-used").textContent = fmt(s.storage_bytes || 0);
+    document.getElementById("storage-files").textContent = `· ${s.file_count || 0} files · ${s.folder_count || 0} folders`;
+    meter.style.display = "block";
+  } catch {
+    meter.style.display = "none";
+  }
+}
+
+export async function bulkDeleteFiles() {
+  if (!_selected.size) return;
+  if (!confirm(`Move ${_selected.size} file(s) to trash?`)) return;
+  const r = await fetch(`${API}/files/bulk-delete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ ids: [..._selected] }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (r.ok) { toast(`Moved ${d.deleted} file(s) to trash`); _selected.clear(); updateBulkBar(); refreshFiles(); updateTrashCount(); }
+  else toast(d.error || "Bulk delete failed", "err");
+}
+
+export async function bulkRestoreFiles() {
+  if (!_selected.size) return;
+  const r = await fetch(`${API}/files/bulk-restore`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ ids: [..._selected] }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (r.ok) { toast(`Restored ${d.restored} file(s)`); _selected.clear(); updateBulkBar(); refreshFiles(); }
+  else toast(d.error || "Bulk restore failed", "err");
+}
+
+export async function openBulkMove() {
+  if (!_selected.size) return;
+  const r = await fetch(`${API}/folders`, { credentials: "same-origin" });
+  const sel = document.getElementById("bulk-move-folder");
+  if (sel) {
+    sel.innerHTML = `<option value="">Root</option>`;
+    if (r.ok) {
+      const folders = await r.json();
+      for (const f of folders) sel.innerHTML += `<option value="${f.id}">${escapeHtml(f.name)}</option>`;
+    }
+  }
+  const m = document.getElementById("bulk-move-modal");
+  if (m) m.style.display = "flex";
+}
+
+export async function confirmBulkMove() {
+  if (!_selected.size) return;
+  const folderId = document.getElementById("bulk-move-folder")?.value || null;
+  const r = await fetch(`${API}/files/bulk-move`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ ids: [..._selected], folder_id: folderId }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (r.ok) { toast(`Moved ${d.moved} file(s)`); _selected.clear(); updateBulkBar(); document.getElementById("bulk-move-modal").style.display = "none"; refreshFiles(); }
+  else toast(d.error || "Bulk move failed", "err");
+}
+
 // Window exposure
 if (typeof window !== "undefined") {
   window.uploadFiles = uploadFiles;
@@ -866,4 +969,12 @@ if (typeof window !== "undefined") {
   window.downloadEditFile = downloadEditFile;
   window.richCmd = richCmd;
   window.saveEditRich = saveEditRich;
+  window.toggleFileSelect = toggleFileSelect;
+  window.updateBulkBar = updateBulkBar;
+  window.clearBulkSelection = clearBulkSelection;
+  window.updateStorageMeter = updateStorageMeter;
+  window.bulkDeleteFiles = bulkDeleteFiles;
+  window.bulkRestoreFiles = bulkRestoreFiles;
+  window.openBulkMove = openBulkMove;
+  window.confirmBulkMove = confirmBulkMove;
 }

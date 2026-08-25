@@ -242,6 +242,80 @@ def api_files_upload():
     return jsonify({"ok": True, "file_id": file_id, "version": new_ver})
 
 
+# ── BULK OPERATIONS (Phase-1 O3) ──────────────────────────────────────────────
+def _valid_org_file_ids(sup, org_id, ids):
+    existing = sup.table("files").select("id").eq("org_id", org_id).in_("id", [str(x) for x in ids]).execute().data
+    return [r["id"] for r in existing]
+
+
+@files_bp.route("/api/files/bulk-delete", methods=["POST"])
+@login_required
+def api_files_bulk_delete():
+    user = current_user()
+    if user["role"] not in ("org_admin", "master_admin"):
+        return jsonify({"error": "Admin only"}), 403
+    data = request.get_json(force=True) or {}
+    ids = data.get("ids") or []
+    if not ids:
+        return jsonify({"error": "No file ids provided"}), 400
+    sup = get_supabase()
+    valid = _valid_org_file_ids(sup, user["org_id"], ids)
+    if not valid:
+        return jsonify({"ok": True, "deleted": 0})
+    sup.table("files").update({
+        "is_deleted": True,
+        "deleted_at": datetime.utcnow().isoformat(),
+        "deleted_by": user["id"],
+    }).in_("id", valid).eq("org_id", user["org_id"]).execute()
+    log_action("bulk_delete", f"{len(valid)} file(s)")
+    return jsonify({"ok": True, "deleted": len(valid)})
+
+
+@files_bp.route("/api/files/bulk-restore", methods=["POST"])
+@login_required
+def api_files_bulk_restore():
+    user = current_user()
+    if user["role"] not in ("org_admin", "master_admin"):
+        return jsonify({"error": "Admin only"}), 403
+    data = request.get_json(force=True) or {}
+    ids = data.get("ids") or []
+    if not ids:
+        return jsonify({"error": "No file ids provided"}), 400
+    sup = get_supabase()
+    # restore targets files currently in trash for this org
+    existing = sup.table("files").select("id").eq("org_id", user["org_id"]).eq("is_deleted", True).in_("id", [str(x) for x in ids]).execute().data
+    valid = [r["id"] for r in existing]
+    if not valid:
+        return jsonify({"ok": True, "restored": 0})
+    sup.table("files").update({"is_deleted": False, "deleted_at": None, "deleted_by": None}).in_("id", valid).eq("org_id", user["org_id"]).execute()
+    log_action("bulk_restore", f"{len(valid)} file(s)")
+    return jsonify({"ok": True, "restored": len(valid)})
+
+
+@files_bp.route("/api/files/bulk-move", methods=["POST"])
+@login_required
+def api_files_bulk_move():
+    user = current_user()
+    if user["role"] not in ("org_admin", "master_admin"):
+        return jsonify({"error": "Admin only"}), 403
+    data = request.get_json(force=True) or {}
+    ids = data.get("ids") or []
+    folder_id = data.get("folder_id") or None
+    if not ids:
+        return jsonify({"error": "No file ids provided"}), 400
+    sup = get_supabase()
+    if folder_id:
+        f = sup.table("folders").select("id").eq("id", folder_id).eq("org_id", user["org_id"]).maybe_single().execute()
+        if not f or not f.data:
+            return jsonify({"error": "Target folder not found"}), 404
+    valid = _valid_org_file_ids(sup, user["org_id"], ids)
+    if not valid:
+        return jsonify({"ok": True, "moved": 0})
+    sup.table("files").update({"folder_id": folder_id}).in_("id", valid).eq("org_id", user["org_id"]).execute()
+    log_action("bulk_move", f"{len(valid)} file(s) -> folder {folder_id}")
+    return jsonify({"ok": True, "moved": len(valid)})
+
+
 @files_bp.route("/api/files/<uuid:file_id>/download", methods=["GET"])
 @login_required
 def api_files_download(file_id):

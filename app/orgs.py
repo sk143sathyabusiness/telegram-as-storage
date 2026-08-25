@@ -211,3 +211,68 @@ def api_orgs_set_backup_channel(org_id):
     sup.table("organizations").update({"backup_channel_id": raw}).eq("id", org_id).execute()
     log_action("set_backup_channel", f"org_id={org_id} -> {raw}", org_id=org_id)
     return jsonify({"ok": True, "backup_channel_id": raw})
+
+
+@orgs_bp.route("/api/orgs/<uuid:org_id>", methods=["PUT"])
+@login_required
+def api_orgs_edit(org_id):
+    user = current_user()
+    if user["role"] != "master_admin":
+        return jsonify({"error": "Master admin only"}), 403
+
+    data = request.get_json(force=True) or {}
+    sup = get_supabase()
+    org = sup.table("organizations").select("id, name").eq("id", org_id).maybe_single().execute()
+    if not org or not org.data:
+        return jsonify({"error": "Organisation not found"}), 404
+
+    update = {}
+    if "name" in data and str(data["name"]).strip():
+        new_name = str(data["name"]).strip()
+        if new_name != org.data["name"]:
+            dup = sup.table("organizations").select("id, status").eq("name", new_name).maybe_single().execute()
+            if dup and dup.data and dup.data["id"] != org_id:
+                if dup.data.get("status") in ("active", "approved"):
+                    return jsonify({"error": "An organisation with this name already exists"}), 409
+            update["name"] = new_name
+    if "telegram_chat_id" in data and str(data["telegram_chat_id"]).strip():
+        cid = str(data["telegram_chat_id"]).strip()
+        if not cid.lstrip("-").isdigit():
+            return jsonify({"error": "Telegram Channel ID must be a numeric ID"}), 400
+        update["telegram_chat_id"] = cid
+    for f in ("industry", "size", "contact_name", "contact_email"):
+        if f in data:
+            update[f] = str(data[f]).strip()
+    if "status" in data and str(data["status"]).strip():
+        update["status"] = str(data["status"]).strip()
+
+    if not update:
+        return jsonify({"error": "Nothing to update"}), 400
+
+    sup.table("organizations").update(update).eq("id", org_id).execute()
+    log_action("edit_org", f"org_id={org_id}", org_id=org_id)
+    return jsonify({"ok": True, **update})
+
+
+@orgs_bp.route("/api/orgs/<uuid:org_id>/reset-admin", methods=["POST"])
+@login_required
+def api_orgs_reset_admin(org_id):
+    user = current_user()
+    if user["role"] != "master_admin":
+        return jsonify({"error": "Master admin only"}), 403
+
+    data = request.get_json(force=True) or {}
+    new_password = str(data.get("password", "")).strip()
+    if len(new_password) < 6:
+        return jsonify({"error": "Password must be at least 6 characters"}), 400
+
+    sup = get_supabase()
+    org = sup.table("organizations").select("id").eq("id", org_id).maybe_single().execute()
+    if not org or not org.data:
+        return jsonify({"error": "Organisation not found"}), 404
+    admin = sup.table("users").select("id, username").eq("org_id", org_id).eq("role", "org_admin").order("created_at").limit(1).execute().data
+    if not admin:
+        return jsonify({"error": "No org_admin user found for this organisation"}), 404
+    sup.table("users").update({"password_hash": generate_password_hash(new_password)}).eq("id", admin[0]["id"]).execute()
+    log_action("reset_org_admin_password", f"org_id={org_id} user={admin[0]['username']}", org_id=org_id)
+    return jsonify({"ok": True, "username": admin[0]["username"]})

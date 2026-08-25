@@ -66,20 +66,20 @@ def api_backup_list():
     return jsonify(rows)
 
 
-@backups_bp.route("/api/backup/create", methods=["POST"])
-@login_required
-def api_backup_create():
-    user = current_user()
-    if user["role"] not in ("org_admin", "master_admin"):
-        return jsonify({"error": "Admin only"}), 403
-    sup = get_supabase()
-    org_id = user["org_id"]
+def _make_backup(sup, org_id, user, essential_only=False):
+    """Build + upload a backup for org_id. Returns the backups row dict or raises."""
     backup_channel_id = _get_org_backup_channel_id(sup, org_id)
     if not backup_channel_id:
-        return jsonify({"error": "No backup channel configured for this organisation"}), 400
-    print(f"[BACKUP] Creating backup for org {org_id}")
+        raise RuntimeError("No backup channel configured for this organisation")
+
+    essential_folder_ids = []
+    if essential_only:
+        ef = sup.table("folders").select("id").eq("org_id", org_id).eq("is_essential", True).execute().data
+        essential_folder_ids = [f["id"] for f in ef]
+
     tables_data = {}
-    for table_name in ["organizations", "users", "folders", "files", "file_versions", "permissions", "audit_logs"]:
+    # Base tables (no file-specific filtering)
+    for table_name in ["organizations", "users", "permissions", "audit_logs"]:
         try:
             rows = sup.table(table_name).select("*").eq("org_id", org_id).execute().data
             tables_data[table_name] = [dict(r) for r in rows]
@@ -90,9 +90,32 @@ def api_backup_create():
             except Exception as e:
                 print(f"[BACKUP] Warning: could not read table '{table_name}': {e}")
                 tables_data[table_name] = []
+
+    # Folders: if essential_only, only essential folders
+    if essential_only:
+        tables_data["folders"] = [dict(r) for r in tables_data.get("folders", []) if r["id"] in essential_folder_ids]
+    else:
+        tables_data.setdefault("folders", [dict(r) for r in sup.table("folders").select("*").eq("org_id", org_id).execute().data])
+
+    # Files + file_versions: if essential_only, only files inside essential folders
+    if essential_only:
+        files_rows = sup.table("files").select("*").eq("org_id", org_id).in_("folder_id", essential_folder_ids).execute().data if essential_folder_ids else []
+        file_ids = [f["id"] for f in files_rows]
+        versions_rows = []
+        if file_ids:
+            for i in range(0, len(file_ids), 100):
+                batch = file_ids[i:i + 100]
+                versions_rows.extend(sup.table("file_versions").select("*").in_("file_id", batch).execute().data)
+        tables_data["files"] = [dict(r) for r in files_rows]
+        tables_data["file_versions"] = [dict(r) for r in versions_rows]
+    else:
+        tables_data["files"] = [dict(r) for r in sup.table("files").select("*").eq("org_id", org_id).execute().data]
+        tables_data["file_versions"] = [dict(r) for r in sup.table("file_versions").select("*").eq("org_id", org_id).execute().data]
+
     backup_payload = {
         "version": 1,
         "org_id": org_id,
+        "essential_only": essential_only,
         "created_at": datetime.utcnow().isoformat(),
         "created_by": user["username"],
         "tables": tables_data,
@@ -100,25 +123,67 @@ def api_backup_create():
     backup_bytes = json.dumps(backup_payload, indent=2, default=str).encode("utf-8")
     size = len(backup_bytes)
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    remote_name = f"backup_{org_id}_{timestamp}.json"
+    prefix = "daily_essential_" if essential_only else "backup_"
+    remote_name = f"{prefix}{org_id}_{timestamp}.json"
     print(f"[BACKUP] Uploading {size} bytes to Telegram channel {backup_channel_id}...")
     message_ids = telegram_service.upload_chunks(backup_bytes, remote_name, backup_channel_id)
     msg_id = message_ids[0]
     print(f"[BACKUP] Uploaded — message_id={msg_id}")
+    sup.table("backups").insert({
+        "org_id": org_id,
+        "name": remote_name,
+        "size_bytes": size,
+        "message_id": msg_id,
+        "created_by": user["id"],
+    }).execute()
+    log_action("create_backup", remote_name, f"size={size} essential_only={essential_only}")
+    return {"name": remote_name, "size_bytes": size}
+
+
+@backups_bp.route("/api/backup/create", methods=["POST"])
+@login_required
+def api_backup_create():
+    user = current_user()
+    if user["role"] not in ("org_admin", "master_admin"):
+        return jsonify({"error": "Admin only"}), 403
+    sup = get_supabase()
+    essential_only = bool((request.get_json(silent=True) or {}).get("essential_only"))
     try:
-        sup.table("backups").insert({
-            "org_id": org_id,
-            "name": remote_name,
-            "size_bytes": size,
-            "message_id": msg_id,
-            "created_by": user["id"],
-        }).execute()
-    except Exception as e:
-        if "PGRST205" in str(e):
-            return jsonify({"error": "Backups table not set up. Run the migration SQL first.", "sql_hint": True}), 503
-        raise
-    log_action("create_backup", remote_name, f"size={size}")
-    return jsonify({"ok": True, "name": remote_name, "size_bytes": size})
+        result = _make_backup(sup, user["org_id"], user, essential_only=essential_only)
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True, **result})
+
+
+@backups_bp.route("/api/backup/daily", methods=["POST"])
+@login_required
+def api_backup_daily():
+    """Scheduled daily backup of essential folders (AGENTS.md rule #6).
+
+    Org admin / acting master: backs up their org's essential folders.
+    Master global: iterates all orgs and creates an essential backup for each.
+    Designed to be triggered by a cron (Vercel Cron / system cron).
+    """
+    user = current_user()
+    if user["role"] not in ("org_admin", "master_admin"):
+        return jsonify({"error": "Admin only"}), 403
+    sup = get_supabase()
+    is_master_global = user["role"] == "master_admin" and not user["org_id"]
+    if is_master_global:
+        orgs = sup.table("organizations").select("id").eq("status", "active").execute().data
+        done, failed = [], []
+        for o in orgs:
+            try:
+                res = _make_backup(sup, o["id"], user, essential_only=True)
+                done.append(res["name"])
+            except Exception as e:
+                failed.append({"org_id": str(o["id"]), "error": str(e)[:160]})
+        return jsonify({"ok": True, "backed_up": done, "failed": failed})
+    try:
+        res = _make_backup(sup, user["org_id"], user, essential_only=True)
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True, **res})
 
 
 @backups_bp.route("/api/backup/restore/<path:name>", methods=["POST"])

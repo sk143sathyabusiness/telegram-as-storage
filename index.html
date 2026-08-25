@@ -53,6 +53,7 @@
     <div class="topbar-user" id="topbar-user"></div>
     <span class="topbar-role" id="topbar-role"></span>
     <span class="session-timer" id="session-timer" title="Idle session timeout"></span>
+    <button class="btn-sm" onclick="openChangePassword()">Change password</button>
     <button class="btn-sm" id="logout-btn" onclick="logout()">Sign out</button>
   </div>
   <div id="master-act-banner" style="display:none; padding:8px 16px; background:rgba(99,102,241,.12); border-bottom:1px solid rgba(99,102,241,.3); font-size:12px; align-items:center; gap:8px;">
@@ -125,6 +126,20 @@
           </div>
           <input type="file" id="file-input" multiple onchange="uploadFiles(this)">
           <input type="file" id="folder-input" webkitdirectory multiple onchange="uploadFiles(this)" style="display:none">
+        </div>
+
+        <div class="bulk-bar" id="bulk-bar" style="display:none;align-items:center;gap:10px;padding:8px 12px;margin:0 0 10px;background:rgba(99,102,241,.1);border:1px solid rgba(99,102,241,.3);border-radius:10px">
+          <span style="font-size:13px;color:var(--text)"><strong id="bulk-count">0</strong> selected</span>
+          <div style="flex:1"></div>
+          <button class="btn-sm" onclick="openBulkMove()">📁 Move</button>
+          <button class="btn-sm" onclick="bulkRestoreFiles()">♻️ Restore</button>
+          <button class="btn-sm danger" onclick="bulkDeleteFiles()">🗑 Delete</button>
+          <button class="btn-sm" onclick="clearBulkSelection()">Clear</button>
+        </div>
+
+        <div class="storage-meter" id="storage-meter" style="display:none;margin:0 0 10px;font-size:12px;color:var(--muted)">
+          📦 Storage used: <strong id="storage-used" style="color:var(--text)">0</strong>
+          <span id="storage-files" style="margin-left:10px"></span>
         </div>
 
         <div class="upload-progress-area" id="progress-area">
@@ -272,6 +287,7 @@
           <div class="panel-header">
             <div class="panel-title">💾 Database Backups</div>
             <button class="btn-sm active" onclick="createBackup()">＋ Create backup</button>
+            <button class="btn-sm" id="daily-backup-btn" onclick="runDailyBackup()" style="display:none">🌙 Daily (essential)</button>
             <button class="btn-sm" onclick="loadBackups()">↻ Refresh</button>
           </div>
           <div id="backup-list"></div>
@@ -290,6 +306,7 @@
             <button class="btn-sm active" onclick="showCreateOrgModal()">＋ New Organisation</button>
             <button class="btn-sm" onclick="loadOrgs()">↻ Refresh</button>
           </div>
+          <div id="orgs-stats" style="display:none;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:0 0 14px"></div>
           <div id="orgs-list"></div>
           <div class="empty-state" id="empty-orgs" style="display:none">
             <div class="empty-icon">🏢</div>
@@ -347,6 +364,81 @@
     <div class="modal-actions">
       <button class="btn-sm" onclick="closeModal('create-org-modal')">Cancel</button>
       <button class="btn-sm active" onclick="createOrg()">Create Organisation</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── EDIT ORG MODAL ───────────────────────────────────────────────────── -->
+<div class="modal-backdrop" id="edit-org-modal" style="display:none">
+  <div class="modal" style="max-width:540px">
+    <h3>✏️ Edit Organisation</h3>
+    <input type="hidden" id="eo-id">
+    <div class="field">
+      <label>Organisation Name *</label>
+      <input id="eo-name" placeholder="e.g. Acme Corp">
+    </div>
+    <div class="field">
+      <label>Telegram Channel ID *</label>
+      <input id="eo-chat-id" placeholder="-100xxxxxx" style="font-family:var(--mono)">
+    </div>
+    <div class="field">
+      <label>Industry</label>
+      <input id="eo-industry" placeholder="e.g. Healthcare">
+    </div>
+    <div class="field">
+      <label>Size</label>
+      <input id="eo-size" placeholder="e.g. 1-50 employees">
+    </div>
+    <div class="field">
+      <label>Status</label>
+      <select id="eo-status">
+        <option value="active">active</option>
+        <option value="approved">approved</option>
+        <option value="pending">pending</option>
+        <option value="rejected">rejected</option>
+      </select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-sm" onclick="closeModal('edit-org-modal')">Cancel</button>
+      <button class="btn-sm active" onclick="saveEditOrg()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── CHANGE PASSWORD MODAL ──────────────────────────────────────────────── -->
+<div class="modal-backdrop" id="change-password-modal" style="display:none">
+  <div class="modal" style="max-width:420px">
+    <h3>🔑 Change Password</h3>
+    <div class="field">
+      <label>Current password</label>
+      <input id="cp-current" type="password">
+    </div>
+    <div class="field">
+      <label>New password (min 6 chars)</label>
+      <input id="cp-new" type="password">
+    </div>
+    <div class="field">
+      <label>Confirm new password</label>
+      <input id="cp-confirm" type="password">
+    </div>
+    <div class="modal-actions">
+      <button class="btn-sm" onclick="closeModal('change-password-modal')">Cancel</button>
+      <button class="btn-sm active" onclick="changeMyPassword()">Change</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── BULK MOVE MODAL ─────────────────────────────────────────────────────── -->
+<div class="modal-backdrop" id="bulk-move-modal" style="display:none">
+  <div class="modal" style="max-width:420px">
+    <h3>📁 Move selected files</h3>
+    <div class="field">
+      <label>Destination folder</label>
+      <select id="bulk-move-folder"><option value="">Root</option></select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-sm" onclick="closeModal('bulk-move-modal')">Cancel</button>
+      <button class="btn-sm active" onclick="confirmBulkMove()">Move</button>
     </div>
   </div>
 </div>
@@ -603,10 +695,10 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script type="module" src="frontend/api.js?v=13"></script>
 <script type="module" src="frontend/auth.js?v=13"></script>
-<script type="module" src="frontend/folders.js?v=13"></script>
-<script type="module" src="frontend/files.js?v=13"></script>
+<script type="module" src="frontend/folders.js?v=14"></script>
+<script type="module" src="frontend/files.js?v=14"></script>
 <script type="module" src="frontend/sharing.js?v=13"></script>
-<script type="module" src="frontend/admin.js?v=13"></script>
-<script type="module" src="frontend/orgs.js?v=14"></script>
+<script type="module" src="frontend/admin.js?v=14"></script>
+<script type="module" src="frontend/orgs.js?v=15"></script>
 </body>
 </html>

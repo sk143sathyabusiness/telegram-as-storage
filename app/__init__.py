@@ -80,6 +80,10 @@ def create_app() -> Flask:
     from app.master import master_bp
     app.register_blueprint(master_bp)
 
+    # Usage statistics (Phase-1 M3/O5)
+    from app.stats import stats_bp
+    app.register_blueprint(stats_bp)
+
     # ── Minimal routes required for Task 1 tests ──────────────────────
 
     @app.route("/")

@@ -1,7 +1,8 @@
 // frontend/orgs.js — master_admin Organisations view
-import { API, toast, escapeHtml } from "./api.js";
+import { API, toast, escapeHtml, state, fmt } from "./api.js";
 
 export async function loadOrgs() {
+  const isMaster = state.currentUser?.role === "master_admin";
   const r = await fetch(`${API}/orgs`, {credentials: "same-origin"});
   const list = document.getElementById("orgs-list");
   const empty = document.getElementById("empty-orgs");
@@ -16,6 +17,24 @@ export async function loadOrgs() {
     return;
   }
   const orgs = await r.json();
+
+  // Master: fetch aggregate usage stats and merge into cards + totals
+  let statsMap = {};
+  let totals = null;
+  if (isMaster) {
+    try {
+      const sr = await fetch(`${API}/stats`, {credentials: "same-origin"});
+      if (sr.ok) {
+        const sd = await sr.json();
+        for (const s of sd.orgs || []) statsMap[s.org_id] = s;
+        totals = sd.totals;
+      }
+    } catch {}
+    renderMasterStats(totals, statsMap);
+  } else if (document.getElementById("orgs-stats")) {
+    document.getElementById("orgs-stats").style.display = "none";
+  }
+
   list.innerHTML = "";
   if (!orgs.length) { if (empty) empty.style.display = ""; return; }
   if (empty) empty.style.display = "none";
@@ -25,11 +44,16 @@ export async function loadOrgs() {
     card.style.cssText = "display:flex;align-items:center;gap:12px;padding:14px 16px;background:var(--glass-bg);border:1px solid var(--glass-border);border-radius:12px;";
     const statusColor = o.status === "active" ? "var(--success)" : o.status === "approved" ? "var(--accent)" : "var(--muted)";
     const backupTxt = o.backup_channel_id ? `backup: ${escapeHtml(String(o.backup_channel_id))}` : "backup: — none —";
+    const st = statsMap[o.id] || {};
+    const statLine = isMaster
+      ? `<div style="font-size:11px;color:var(--muted);font-family:var(--mono)">📦 ${fmt(st.storage_bytes || 0)} · 📄 ${st.file_count || 0} · 👥 ${st.user_count || 0} · 🗓 ${st.last_backup ? "last backup " + new Date(st.last_backup).toLocaleDateString() : "no backup"}</div>`
+      : "";
     card.innerHTML = `
       <div style="flex:1;min-width:0">
         <div style="font-weight:600;color:var(--text)">${escapeHtml(o.name)}</div>
         <div style="font-size:11px;color:var(--muted);font-family:var(--mono)">${escapeHtml(o.id || "")} · <span style="color:${statusColor}">${escapeHtml(o.status || "—")}</span> · chat: ${escapeHtml(o.telegram_chat_id || "—")}</div>
         <div style="font-size:11px;color:var(--muted);font-family:var(--mono)">${backupTxt}</div>
+        ${statLine}
         <div style="font-size:11px;color:var(--muted)">${escapeHtml(o.industry || "")} ${escapeHtml(o.size || "")}</div>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap">
@@ -37,10 +61,25 @@ export async function loadOrgs() {
         ${o.status !== "approved" && o.status !== "active" ? `<button class="btn-sm active" onclick="approveOrg('${o.id}')">Approve</button>` : ""}
         ${o.status !== "rejected" ? `<button class="btn-sm danger" onclick="rejectOrg('${o.id}')">Reject</button>` : ""}
         <button class="btn-sm" onclick="showSetBackupModal('${o.id}','${escapeHtml(o.name).replace(/'/g, "\\'")}')">Set backup</button>
+        ${isMaster ? `<button class="btn-sm" onclick="openEditOrg('${o.id}','${escapeHtml(o.name).replace(/'/g, "\\'")}','${escapeHtml(String(o.telegram_chat_id || ""))}','${escapeHtml(o.industry || "")}','${escapeHtml(o.size || "")}','${escapeHtml(o.status || "active")}')">Edit</button>` : ""}
+        ${isMaster ? `<button class="btn-sm" onclick="resetOrgAdmin('${o.id}','${escapeHtml(o.name).replace(/'/g, "\\'")}')">Reset admin</button>` : ""}
       </div>`;
     list.appendChild(card);
   }
   updateMasterBanner();
+}
+
+function renderMasterStats(totals, statsMap) {
+  const el = document.getElementById("orgs-stats");
+  if (!el) return;
+  if (!totals) { el.style.display = "none"; return; }
+  el.style.display = "grid";
+  el.innerHTML = `
+    <div class="stat-card"><div class="stat-val">${totals.orgs ?? 0}</div><div class="stat-label">Organisations</div></div>
+    <div class="stat-card"><div class="stat-val">${fmt(totals.storage_bytes || 0)}</div><div class="stat-label">Total storage</div></div>
+    <div class="stat-card"><div class="stat-val">${totals.file_count ?? 0}</div><div class="stat-label">Files</div></div>
+    <div class="stat-card"><div class="stat-val">${totals.user_count ?? 0}</div><div class="stat-label">Users</div></div>
+    <div class="stat-card"><div class="stat-val">${totals.folder_count ?? 0}</div><div class="stat-label">Folders</div></div>`;
 }
 
 export async function approveOrg(orgId) {
@@ -115,6 +154,57 @@ if (typeof window !== "undefined") {
   window.createOrg = createOrg;
   window.showSetBackupModal = showSetBackupModal;
   window.setBackupChannel = setBackupChannel;
+  window.openEditOrg = openEditOrg;
+  window.saveEditOrg = saveEditOrg;
+  window.resetOrgAdmin = resetOrgAdmin;
+}
+
+export async function openEditOrg(id, name, chatId, industry, size, status) {
+  const m = document.getElementById("edit-org-modal");
+  if (!m) return;
+  document.getElementById("eo-id").value = id;
+  document.getElementById("eo-name").value = name || "";
+  document.getElementById("eo-chat-id").value = chatId || "";
+  document.getElementById("eo-industry").value = industry || "";
+  document.getElementById("eo-size").value = size || "";
+  document.getElementById("eo-status").value = status || "active";
+  m.style.display = "flex";
+}
+
+export async function saveEditOrg() {
+  const id = document.getElementById("eo-id").value;
+  const name = document.getElementById("eo-name").value.trim();
+  const chat_id = document.getElementById("eo-chat-id").value.trim();
+  const industry = document.getElementById("eo-industry").value.trim();
+  const size = document.getElementById("eo-size").value.trim();
+  const status = document.getElementById("eo-status").value.trim();
+  if (!name || !chat_id) { toast("Name and Channel ID are required", "err"); return; }
+  const r = await fetch(`${API}/orgs/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ name, telegram_chat_id: chat_id, industry, size, status }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (r.ok) {
+    toast("Organisation updated", "ok");
+    document.getElementById("edit-org-modal").style.display = "none";
+    loadOrgs();
+  } else toast(d.error || "Update failed", "err");
+}
+
+export async function resetOrgAdmin(id, name) {
+  const pw = prompt(`Reset admin password for "${name}"\n\nEnter new password (min 6 characters):`);
+  if (!pw) return;
+  const r = await fetch(`${API}/orgs/${id}/reset-admin`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ password: pw }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (r.ok) toast(`Admin password reset for ${d.username || name}`, "ok");
+  else toast(d.error || "Reset failed", "err");
 }
 
 export async function showCreateOrgModal() {

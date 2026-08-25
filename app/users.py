@@ -81,6 +81,41 @@ def api_users_stats():
     })
 
 
+@users_bp.route("/api/users/me/password", methods=["POST"])
+@login_required
+def api_users_change_own_password():
+    """Self-service password change for any logged-in user (Phase-1 O2)."""
+    from werkzeug.security import check_password_hash
+    user = current_user()
+    data = request.get_json(force=True) or {}
+    current = str(data.get("current_password", ""))
+    new_pw = str(data.get("new_password", ""))
+    if len(new_pw) < 6:
+        return jsonify({"error": "New password must be at least 6 characters"}), 400
+    sup = get_supabase()
+    me = sup.table("users").select("id, password_hash").eq("id", user["id"]).maybe_single().execute()
+    if not me or not me.data:
+        return jsonify({"error": "User not found"}), 404
+    stored = me.data.get("password_hash") or ""
+    ok = False
+    try:
+        if check_password_hash(stored, current):
+            ok = True
+    except Exception:
+        pass
+    if not ok and stored.startswith("$2"):
+        try:
+            import bcrypt
+            ok = bcrypt.checkpw(current.encode(), stored.encode())
+        except Exception:
+            pass
+    if not ok:
+        return jsonify({"error": "Current password is incorrect"}), 400
+    sup.table("users").update({"password_hash": generate_password_hash(new_pw)}).eq("id", user["id"]).execute()
+    log_action("change_own_password", user["username"])
+    return jsonify({"ok": True})
+
+
 @users_bp.route("/api/users/<uuid:user_id>", methods=["PUT"])
 @login_required
 def api_users_update(user_id):

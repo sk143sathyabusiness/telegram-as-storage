@@ -338,6 +338,8 @@ export async function revokeFolderAccess(folderId, permId, username) {
 
 // ── BACKUP ──────────────────────────────────────────────────────────────────
 export async function loadBackups() {
+  const dbBtn = document.getElementById("daily-backup-btn");
+  if (dbBtn && state.currentUser?.role === "master_admin") dbBtn.style.display = "";
   const r = await fetch(API + "/backup/list", {credentials:"same-origin"});
   if (!r.ok) { const d = await r.json().catch(() => ({})); if (d.error) toast(d.error, "err"); return; }
   const backups = await r.json();
@@ -466,4 +468,48 @@ if (typeof window !== "undefined") {
   window.downloadBackup = downloadBackup;
   window.deleteBackup = deleteBackup;
   window.loadAllVersions = loadAllVersions;
+  window.openChangePassword = openChangePassword;
+  window.changeMyPassword = changeMyPassword;
+  window.runDailyBackup = runDailyBackup;
+}
+
+// ── DAILY (ESSENTIAL-ONLY) BACKUP (Phase-1 M8) ────────────────────────────
+export async function runDailyBackup() {
+  if (state.currentUser?.role !== "master_admin") { toast("Master admin only", "err"); return; }
+  if (!confirm("Run daily backup of all essential folders across active organisations?")) return;
+  toast("Daily backup running…");
+  const r = await fetch(`${API}/backup/daily`, { method: "POST", credentials: "same-origin" });
+  const d = await r.json().catch(() => ({}));
+  if (r.ok) toast(`Daily backup complete: ${d.summary || d}`, "ok");
+  else toast(d.error || "Daily backup failed", "err");
+}
+
+// ── SELF-SERVICE PASSWORD CHANGE (Phase-1 O2) ─────────────────────────────
+export async function openChangePassword() {
+  const m = document.getElementById("change-password-modal");
+  if (!m) return;
+  document.getElementById("cp-current").value = "";
+  document.getElementById("cp-new").value = "";
+  document.getElementById("cp-confirm").value = "";
+  m.style.display = "flex";
+}
+
+export async function changeMyPassword() {
+  const cur = document.getElementById("cp-current").value;
+  const pw = document.getElementById("cp-new").value;
+  const conf = document.getElementById("cp-confirm").value;
+  if (!cur || !pw) { toast("Both fields are required", "err"); return; }
+  if (pw.length < 6) { toast("New password must be at least 6 characters", "err"); return; }
+  if (pw !== conf) { toast("New passwords do not match", "err"); return; }
+  const r = await fetch(`${API}/users/me/password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ current_password: cur, new_password: pw }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (r.ok) {
+    toast("Password changed", "ok");
+    document.getElementById("change-password-modal").style.display = "none";
+  } else toast(d.error || "Change failed", "err");
 }

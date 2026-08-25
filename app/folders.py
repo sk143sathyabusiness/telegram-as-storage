@@ -35,7 +35,7 @@ def api_folders_get():
     err = _require_active_org(sup, user["org_id"])
     if err:
         return err
-    data = sup.table("folders").select("id, name, parent_id").eq("org_id", user["org_id"]).order("name").execute().data
+    data = sup.table("folders").select("id, name, parent_id, is_essential").eq("org_id", user["org_id"]).order("name").execute().data
     if user["role"] in ("org_admin", "master_admin"):
         return jsonify([dict(r) for r in data])
     visible_ids = set()
@@ -62,6 +62,29 @@ def api_folders_get():
                     changed = True
     filtered = [dict(f) for f in data if f["id"] in visible_ids]
     return jsonify(filtered)
+
+
+@folders_bp.route("/api/folders/<uuid:folder_id>/essential", methods=["POST"])
+@login_required
+def api_folder_toggle_essential(folder_id):
+    user = current_user()
+    if user["role"] not in ("org_admin", "master_admin"):
+        return jsonify({"error": "Admin only"}), 403
+    sup = get_supabase()
+    folder = sup.table("folders").select("name, org_id, is_essential").eq("id", folder_id).maybe_single().execute()
+    if not folder or not folder.data:
+        return jsonify({"error": "Folder not found"}), 404
+    if folder.data["org_id"] != user["org_id"]:
+        return jsonify({"error": "Permission denied"}), 403
+    data = request.get_json(silent=True) or {}
+    new_val = data.get("is_essential")
+    if new_val is None:
+        new_val = not bool(folder.data.get("is_essential"))
+    else:
+        new_val = bool(new_val)
+    sup.table("folders").update({"is_essential": new_val}).eq("id", folder_id).eq("org_id", user["org_id"]).execute()
+    log_action("toggle_essential_folder", folder.data["name"], f"is_essential={new_val}")
+    return jsonify({"ok": True, "is_essential": new_val})
 
 
 @folders_bp.route("/api/folders", methods=["POST"])
