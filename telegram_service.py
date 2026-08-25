@@ -20,6 +20,7 @@ from typing import List, Dict, Optional
 
 from telethon import TelegramClient
 from telethon.tl.types import Message
+from telethon.tl.functions.channels import CreateChannelRequest
 from telethon.errors import ChatIdInvalidError
 from dotenv import load_dotenv
 
@@ -430,6 +431,36 @@ async def backup_essential_folder(channel_id: int, backup_channel_id: int, messa
         return [m.id for m in forwarded]
     finally:
         await client.disconnect()
+
+
+async def _create_backup_channel_async(title: str) -> int:
+    """Create a new private Telegram channel for org backups. Returns the channel ID.
+    
+    The creator (userbot) automatically becomes admin. No local storage of channel info.
+    """
+    if not is_configured():
+        raise RuntimeError("Telegram not configured — set TG_API_ID, TG_API_HASH, and session")
+    client = _make_client()
+    await client.connect()
+    if not await client.is_user_authorized():
+        await client.disconnect()
+        raise RuntimeError("Telethon session not authorized")
+    try:
+        result = await client(CreateChannelRequest(
+            title=title,
+            about=f"Backup channel for {title}",
+            megagroup=False
+        ))
+        chat = result.chats[0]
+        raw_id = int(chat.id)
+        return raw_id
+    finally:
+        await client.disconnect()
+
+
+def create_backup_channel(title: str) -> int:
+    """Sync wrapper — creates a private backup channel and returns its raw integer ID."""
+    return asyncio.run(_create_backup_channel_async(title))
 
 
 # ---------------------------------------------------------------------------

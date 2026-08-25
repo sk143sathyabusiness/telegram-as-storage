@@ -4,7 +4,8 @@ app.backups — backup to Telegram channel (Task 6).
 Moved from app.py:1655-1815 (api_backup_list, api_backup_create,
 api_backup_restore, api_backup_download, api_backup_delete).
 Metadata JSON is uploaded via telegram_service.upload_chunks to
-BACKUP_CHANNEL_ID (app.config). Zero local storage.
+the org's backup channel (from organizations.backup_channel_id,
+falling back to global BACKUP_CHANNEL_ID). Zero local storage.
 """
 
 import asyncio
@@ -14,7 +15,7 @@ from datetime import datetime
 from flask import Blueprint, jsonify, Response
 
 import telegram_service
-from app.config import BACKUP_CHANNEL_ID
+from app.config import BACKUP_CHANNEL_ID, TELEGRAM_CONFIGURED
 from app.supabase_client import get_supabase
 from app.security import login_required, current_user
 from app.utils import log_action
@@ -22,10 +23,19 @@ from app.utils import log_action
 backups_bp = Blueprint("backups", __name__)
 
 
-def _backup_channel_ok():
-    if not BACKUP_CHANNEL_ID:
-        return False, jsonify({"error": "BACKUP_CHANNEL_ID not configured in .env"}), 500
-    return True, None, None
+def _get_org_backup_channel_id(sup, org_id) -> int | None:
+    """Resolve the backup channel ID for an org.
+    Priority: org-specific backup_channel_id > global BACKUP_CHANNEL_ID > None.
+    """
+    org = sup.table("organizations").select("backup_channel_id").eq("id", org_id).maybe_single().execute()
+    if org and org.data and org.data.get("backup_channel_id"):
+        try:
+            return int(org.data["backup_channel_id"])
+        except (ValueError, TypeError):
+            pass
+    if BACKUP_CHANNEL_ID:
+        return BACKUP_CHANNEL_ID
+    return None
 
 
 @backups_bp.route("/api/backup/list", methods=["GET"])
@@ -62,11 +72,11 @@ def api_backup_create():
     user = current_user()
     if user["role"] not in ("org_admin", "master_admin"):
         return jsonify({"error": "Admin only"}), 403
-    ok, err, code = _backup_channel_ok()
-    if not ok:
-        return err, code
     sup = get_supabase()
     org_id = user["org_id"]
+    backup_channel_id = _get_org_backup_channel_id(sup, org_id)
+    if not backup_channel_id:
+        return jsonify({"error": "No backup channel configured for this organisation"}), 400
     print(f"[BACKUP] Creating backup for org {org_id}")
     tables_data = {}
     for table_name in ["organizations", "users", "folders", "files", "file_versions", "permissions", "audit_logs"]:
@@ -91,8 +101,8 @@ def api_backup_create():
     size = len(backup_bytes)
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     remote_name = f"backup_{org_id}_{timestamp}.json"
-    print(f"[BACKUP] Uploading {size} bytes to Telegram channel {BACKUP_CHANNEL_ID}...")
-    message_ids = telegram_service.upload_chunks(backup_bytes, remote_name, BACKUP_CHANNEL_ID)
+    print(f"[BACKUP] Uploading {size} bytes to Telegram channel {backup_channel_id}...")
+    message_ids = telegram_service.upload_chunks(backup_bytes, remote_name, backup_channel_id)
     msg_id = message_ids[0]
     print(f"[BACKUP] Uploaded — message_id={msg_id}")
     try:
@@ -117,16 +127,17 @@ def api_backup_restore(name):
     user = current_user()
     if user["role"] not in ("org_admin", "master_admin"):
         return jsonify({"error": "Admin only"}), 403
-    ok, err, code = _backup_channel_ok()
-    if not ok:
-        return err, code
     sup = get_supabase()
+    org_id = user["org_id"]
+    backup_channel_id = _get_org_backup_channel_id(sup, org_id)
+    if not backup_channel_id:
+        return jsonify({"error": "No backup channel configured for this organisation"}), 400
     record = sup.table("backups").select("*").eq("org_id", user["org_id"]).eq("name", name).maybe_single().execute()
     if not record or not record.data:
         return jsonify({"error": "Backup not found"}), 404
     msg_id = record.data["message_id"]
     print(f"[BACKUP] Downloading backup from Telegram (message_id={msg_id})...")
-    backup_bytes = telegram_service.download_chunks(BACKUP_CHANNEL_ID, [msg_id])
+    backup_bytes = telegram_service.download_chunks(backup_channel_id, [msg_id])
     backup = json.loads(backup_bytes.decode("utf-8"))
     if backup.get("org_id") != user["org_id"]:
         return jsonify({"error": "Backup belongs to another organisation"}), 403
@@ -161,15 +172,16 @@ def api_backup_download(name):
     user = current_user()
     if user["role"] not in ("org_admin", "master_admin"):
         return jsonify({"error": "Admin only"}), 403
-    ok, err, code = _backup_channel_ok()
-    if not ok:
-        return err, code
     sup = get_supabase()
+    org_id = user["org_id"]
+    backup_channel_id = _get_org_backup_channel_id(sup, org_id)
+    if not backup_channel_id:
+        return jsonify({"error": "No backup channel configured for this organisation"}), 400
     record = sup.table("backups").select("*").eq("org_id", user["org_id"]).eq("name", name).maybe_single().execute()
     if not record or not record.data:
         return jsonify({"error": "Backup not found"}), 404
     msg_id = record.data["message_id"]
-    backup_bytes = telegram_service.download_chunks(BACKUP_CHANNEL_ID, [msg_id])
+    backup_bytes = telegram_service.download_chunks(backup_channel_id, [msg_id])
     log_action("download_backup", name)
     resp = Response(backup_bytes, mimetype="application/json")
     resp.headers["Content-Disposition"] = f'attachment; filename="{name}"'
@@ -182,16 +194,17 @@ def api_backup_delete(name):
     user = current_user()
     if user["role"] not in ("org_admin", "master_admin"):
         return jsonify({"error": "Admin only"}), 403
-    ok, err, code = _backup_channel_ok()
-    if not ok:
-        return err, code
     sup = get_supabase()
+    org_id = user["org_id"]
+    backup_channel_id = _get_org_backup_channel_id(sup, org_id)
+    if not backup_channel_id:
+        return jsonify({"error": "No backup channel configured for this organisation"}), 400
     record = sup.table("backups").select("*").eq("org_id", user["org_id"]).eq("name", name).maybe_single().execute()
     if not record or not record.data:
         return jsonify({"error": "Backup not found"}), 404
     msg_id = record.data["message_id"]
     print(f"[BACKUP] Deleting backup from Telegram (message_id={msg_id})...")
-    asyncio.run(telegram_service.delete_file(BACKUP_CHANNEL_ID, [msg_id]))
+    asyncio.run(telegram_service.delete_file(backup_channel_id, [msg_id]))
     sup.table("backups").delete().eq("id", record.data["id"]).execute()
     log_action("delete_backup", name)
     print(f"[BACKUP] Deleted backup '{name}'")

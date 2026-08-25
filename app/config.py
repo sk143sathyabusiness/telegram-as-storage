@@ -13,6 +13,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# ── Telegram configured ───────────────────────────────────────────────
+TELEGRAM_CONFIGURED = bool(
+    os.getenv("TG_API_ID")
+    and os.getenv("TG_API_HASH")
+    and (os.getenv("TG_SESSION_NAME") or os.getenv("TG_SESSION_STRING"))
+)
+
 # ── Chunking ─────────────────────────────────────────────────────────────
 CHUNK_SIZE_BYTES = int(os.getenv("CHUNK_SIZE_BYTES", "1900000000"))
 

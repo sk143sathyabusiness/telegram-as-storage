@@ -24,16 +24,19 @@ export async function loadOrgs() {
     card.className = "fa-card";
     card.style.cssText = "display:flex;align-items:center;gap:12px;padding:14px 16px;background:var(--glass-bg);border:1px solid var(--glass-border);border-radius:12px;";
     const statusColor = o.status === "active" ? "var(--success)" : o.status === "approved" ? "var(--accent)" : "var(--muted)";
+    const backupTxt = o.backup_channel_id ? `backup: ${escapeHtml(String(o.backup_channel_id))}` : "backup: — none —";
     card.innerHTML = `
       <div style="flex:1;min-width:0">
         <div style="font-weight:600;color:var(--text)">${escapeHtml(o.name)}</div>
         <div style="font-size:11px;color:var(--muted);font-family:var(--mono)">${escapeHtml(o.id || "")} · <span style="color:${statusColor}">${escapeHtml(o.status || "—")}</span> · chat: ${escapeHtml(o.telegram_chat_id || "—")}</div>
+        <div style="font-size:11px;color:var(--muted);font-family:var(--mono)">${backupTxt}</div>
         <div style="font-size:11px;color:var(--muted)">${escapeHtml(o.industry || "")} ${escapeHtml(o.size || "")}</div>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap">
         <button class="btn-sm" onclick="actAsOrg('${o.id}','${escapeHtml(o.name).replace(/'/g, "\\'")}')">Act as</button>
         ${o.status !== "approved" && o.status !== "active" ? `<button class="btn-sm active" onclick="approveOrg('${o.id}')">Approve</button>` : ""}
         ${o.status !== "rejected" ? `<button class="btn-sm danger" onclick="rejectOrg('${o.id}')">Reject</button>` : ""}
+        <button class="btn-sm" onclick="showSetBackupModal('${o.id}','${escapeHtml(o.name).replace(/'/g, "\\'")}')">Set backup</button>
       </div>`;
     list.appendChild(card);
   }
@@ -108,4 +111,87 @@ if (typeof window !== "undefined") {
   window.actAsOrg = actAsOrg;
   window.clearActAs = clearActAs;
   window.updateMasterBanner = updateMasterBanner;
+  window.showCreateOrgModal = showCreateOrgModal;
+  window.createOrg = createOrg;
+  window.showSetBackupModal = showSetBackupModal;
+  window.setBackupChannel = setBackupChannel;
+}
+
+export async function showCreateOrgModal() {
+  const m = document.getElementById("create-org-modal");
+  if (m) m.style.display = "flex";
+}
+
+export async function createOrg() {
+  const name = document.getElementById("co-name")?.value.trim() || "";
+  const chatId = document.getElementById("co-chat-id")?.value.trim() || "";
+  const username = document.getElementById("co-admin-username")?.value.trim() || "";
+  const password = document.getElementById("co-admin-password")?.value || "";
+  const industry = document.getElementById("co-industry")?.value.trim() || "";
+  const size = document.getElementById("co-size")?.value.trim() || "";
+  const backupChannelId = document.getElementById("co-backup-channel-id")?.value.trim() || "";
+
+  if (!name || !chatId || !username || !password) {
+    toast("Org name, Channel ID, Admin username and password are required", "err");
+    return;
+  }
+  if (password.length < 6) {
+    toast("Admin password must be at least 6 characters", "err");
+    return;
+  }
+
+  const body = {
+    org_name: name,
+    chat_id: chatId,
+    username,
+    password,
+    industry,
+    size,
+  };
+  if (backupChannelId) body.backup_channel_id = backupChannelId;
+
+  const r = await fetch(`${API}/orgs/create`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify(body),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (r.ok) {
+    let msg = `Organisation "${name}" created`;
+    if (d.backup_channel_id) msg += ` · backup channel ${d.backup_channel_id}`;
+    if (d.warning) msg += ` · ⚠ ${d.warning}`;
+    toast(msg, d.warning ? "warn" : "ok");
+    // reset form + close
+    ["co-name", "co-chat-id", "co-admin-username", "co-admin-password", "co-industry", "co-size", "co-backup-channel-id"]
+      .forEach((id) => { const el = document.getElementById(id); if (el) el.value = ""; });
+    const m = document.getElementById("create-org-modal");
+    if (m) m.style.display = "none";
+    loadOrgs();
+  } else {
+    toast(d.error || "Failed to create organisation", "err");
+  }
+}
+
+export async function showSetBackupModal(orgId, orgName) {
+  const existing = prompt(`Set backup channel for "${orgName}"\n\nEnter a numeric Telegram channel ID (leave blank to clear):`);
+  if (existing === null) return; // cancelled
+  const r = await fetch(`${API}/orgs/${orgId}/backup-channel`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ backup_channel_id: existing.trim() }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (r.ok) {
+    toast(`Backup channel ${d.backup_channel_id ? "set to " + d.backup_channel_id : "cleared"}`, "ok");
+    loadOrgs();
+  } else {
+    toast(d.error || "Failed to set backup channel", "err");
+  }
+}
+
+// Kept for backwards-compat with inline onclick (uses prompt above)
+export async function setBackupChannel(orgId) {
+  showSetBackupModal(orgId, "");
 }

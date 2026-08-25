@@ -9,9 +9,13 @@ routing changes from @app.route to Blueprint.
 from flask import Blueprint, jsonify, request
 from werkzeug.security import generate_password_hash
 
+from telethon.tl.functions.channels import CreateChannelRequest
+from telethon.errors import ChatIdInvalidError
+
 from app.supabase_client import get_supabase
 from app.security import login_required, current_user
 from app.utils import log_action
+from telegram_service import create_backup_channel
 
 orgs_bp = Blueprint("orgs", __name__)
 
@@ -102,3 +106,108 @@ def api_orgs_reject(org_id):
     sup.table("organizations").update({"status": "rejected"}).eq("id", org_id).execute()
     log_action("reject_org", f"org_id={org_id}")
     return jsonify({"ok": True})
+
+
+@orgs_bp.route("/api/orgs/create", methods=["POST"])
+@login_required
+def api_orgs_create():
+    user = current_user()
+    if user["role"] != "master_admin":
+        return jsonify({"error": "Master admin only"}), 403
+
+    data = request.get_json(force=True) or {}
+
+    required = ["org_name", "chat_id", "username", "password"]
+    for f in required:
+        if not str(data.get(f, "")).strip():
+            return jsonify({"error": f"{f} is required"}), 400
+
+    chat_id = str(data["chat_id"]).strip()
+    if not chat_id.lstrip("-").isdigit():
+        return jsonify({"error": "Telegram Channel ID must be a numeric ID"}), 400
+
+    name = data["org_name"].strip()
+
+    sup = get_supabase()
+
+    existing_user = sup.table("users").select("id").eq("username", data["username"].strip()).execute()
+    if existing_user.data:
+        return jsonify({"error": "Username already taken"}), 400
+
+    dup = sup.table("organizations").select("id, status").eq("name", name).maybe_single().execute()
+    if dup and dup.data:
+        if dup.data.get("status") in ("active", "approved"):
+            return jsonify({"error": "An organisation with this name already exists"}), 409
+        sup.table("organizations").delete().eq("id", dup.data["id"]).execute()
+
+    backup_channel_id = None
+    warning = None
+    manual_backup_id = str(data.get("backup_channel_id", "")).strip()
+
+    if manual_backup_id:
+        if not manual_backup_id.lstrip("-").isdigit():
+            return jsonify({"error": "Backup Channel ID must be a numeric ID"}), 400
+        backup_channel_id = manual_backup_id
+    else:
+        from app import config
+        if config.TELEGRAM_CONFIGURED:
+            try:
+                backup_channel_id = str(create_backup_channel(f"Backup — {name}"))
+            except Exception as e:
+                warning = f"Could not auto-create backup channel: {e}"
+                backup_channel_id = None
+        else:
+            warning = "Telegram not configured — backup channel not set"
+
+    org_result = sup.table("organizations").insert({
+        "name": name,
+        "industry": data.get("industry", ""),
+        "size": data.get("size", ""),
+        "contact_name": data.get("contact_name", ""),
+        "contact_email": data.get("contact_email", ""),
+        "telegram_chat_id": chat_id,
+        "backup_channel_id": backup_channel_id,
+        "status": "active",
+    }).execute()
+    org_id = org_result.data[0]["id"]
+
+    sup.table("users").insert({
+        "org_id": org_id,
+        "username": data["username"].strip(),
+        "password_hash": generate_password_hash(data["password"]),
+        "role": "org_admin",
+    }).execute()
+
+    log_action("org_create", f"org_id={org_id}", org_id=org_id)
+
+    resp = {"ok": True, "org_id": org_id}
+    if backup_channel_id:
+        resp["backup_channel_id"] = backup_channel_id
+    if warning:
+        resp["warning"] = warning
+    return jsonify(resp)
+
+
+@orgs_bp.route("/api/orgs/<uuid:org_id>/backup-channel", methods=["PUT"])
+@login_required
+def api_orgs_set_backup_channel(org_id):
+    user = current_user()
+    if user["role"] != "master_admin":
+        return jsonify({"error": "Master admin only"}), 403
+
+    data = request.get_json(force=True) or {}
+    raw = str(data.get("backup_channel_id", "")).strip()
+
+    if not raw:
+        sup = get_supabase()
+        sup.table("organizations").update({"backup_channel_id": None}).eq("id", org_id).execute()
+        log_action("set_backup_channel", f"org_id={org_id} cleared", org_id=org_id)
+        return jsonify({"ok": True, "backup_channel_id": None})
+
+    if not raw.lstrip("-").isdigit():
+        return jsonify({"error": "Backup Channel ID must be a numeric ID"}), 400
+
+    sup = get_supabase()
+    sup.table("organizations").update({"backup_channel_id": raw}).eq("id", org_id).execute()
+    log_action("set_backup_channel", f"org_id={org_id} -> {raw}", org_id=org_id)
+    return jsonify({"ok": True, "backup_channel_id": raw})

@@ -287,6 +287,7 @@
         <div class="panel">
           <div class="panel-header">
             <div class="panel-title">🏢 Organisations</div>
+            <button class="btn-sm active" onclick="showCreateOrgModal()">＋ New Organisation</button>
             <button class="btn-sm" onclick="loadOrgs()">↻ Refresh</button>
           </div>
           <div id="orgs-list"></div>
@@ -302,6 +303,53 @@
 
 <!-- toast -->
 <div class="toast" id="toast"></div>
+
+<!-- ── CREATE ORG MODAL ──────────────────────────────────────────────────── -->
+<div class="modal-backdrop" id="create-org-modal" style="display:none">
+  <div class="modal" style="max-width:540px">
+    <h3>＋ New Organisation</h3>
+    <div class="field">
+      <label>Organisation Name *</label>
+      <input id="co-name" placeholder="e.g. Acme Corp">
+    </div>
+    <div class="field">
+      <label>Telegram Channel ID *</label>
+      <input id="co-chat-id" type="number" placeholder="e.g. -1001234567890" style="font-family:var(--mono)">
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">The Telegram channel where this org's files will be stored. Must be a numeric ID.</div>
+    </div>
+    <div class="field">
+      <label>Admin Username *</label>
+      <input id="co-admin-username" placeholder="e.g. admin_acme">
+    </div>
+    <div class="field">
+      <label>Admin Password *</label>
+      <div class="pw-field">
+        <input id="co-admin-password" type="password" placeholder="min 6 characters">
+        <button type="button" class="pw-toggle" data-target="co-admin-password" aria-label="Show password">👁️</button>
+      </div>
+    </div>
+    <div class="field">
+      <label>Industry (optional)</label>
+      <input id="co-industry" placeholder="e.g. Finance">
+    </div>
+    <div class="field">
+      <label>Size (optional)</label>
+      <input id="co-size" placeholder="e.g. 1-10">
+    </div>
+    <div class="field">
+      <label>Backup Channel ID (optional)</label>
+      <input id="co-backup-channel-id" type="number" placeholder="leave blank to auto-create" style="font-family:var(--mono)">
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">
+        Leave empty → a private backup channel is auto-created via Telegram.<br>
+        Enter a numeric channel ID to use an existing one you own.
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-sm" onclick="closeModal('create-org-modal')">Cancel</button>
+      <button class="btn-sm active" onclick="createOrg()">Create Organisation</button>
+    </div>
+  </div>
+</div>
 
 <!-- ── SHARE MODAL ───────────────────────────────────────────────────── -->
 <div class="modal-backdrop" id="share-modal" style="display:none">
@@ -559,6 +607,6 @@
 <script type="module" src="frontend/files.js?v=13"></script>
 <script type="module" src="frontend/sharing.js?v=13"></script>
 <script type="module" src="frontend/admin.js?v=13"></script>
-<script type="module" src="frontend/orgs.js?v=13"></script>
+<script type="module" src="frontend/orgs.js?v=14"></script>
 </body>
 </html>
