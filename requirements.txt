@@ -8,3 +8,4 @@ Pygments              # syntax highlighting for text preview
 python-docx           # Word document handling
 openpyxl              # Excel spreadsheet handling
 python-pptx           # PowerPoint presentation handling
+bcrypt                # for verifying Supabase pgcrypto $2a$ hashes

@@ -14,6 +14,22 @@ from werkzeug.security import check_password_hash
 from app.supabase_client import get_supabase
 from app.security import login_required
 
+def _verify_password(stored_hash: str, password: str) -> bool:
+    # Primary: werkzeug (scrypt/pbkdf2)
+    try:
+        if check_password_hash(stored_hash, password):
+            return True
+    except Exception:
+        pass
+    # Fallback: bcrypt $2a$/$2b$ from Supabase pgcrypto crypt() — needs bcrypt lib
+    if stored_hash and stored_hash.startswith("$2"):
+        try:
+            import bcrypt
+            return bcrypt.checkpw(password.encode(), stored_hash.encode())
+        except Exception:
+            pass
+    return False
+
 auth_bp = Blueprint("auth", __name__)
 
 # ── Login brute-force protection (app.py:281-313) ─────────────────────────
@@ -83,7 +99,7 @@ def api_login():
         _login_rate_limit_register_failure(rl_key)
         return jsonify({"error": "Invalid credentials"}), 401
     user = result.data[0]
-    if not check_password_hash(user["password_hash"], password):
+    if not _verify_password(user["password_hash"], password):
         _login_rate_limit_register_failure(rl_key)
         return jsonify({"error": "Invalid credentials"}), 401
     _login_rate_limit_register_success(rl_key)
