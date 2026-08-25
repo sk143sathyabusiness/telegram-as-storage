@@ -184,27 +184,62 @@ export function closeAllMenus() {
 document.addEventListener("click", closeAllMenus);
 document.addEventListener("keydown", e => { if (e.key === "Escape") closeAllMenus(); });
 
-function loadCardThumb(fileId, ext, imgEl, iconEl) {
-  const imageExts = ["png","jpg","jpeg","gif","svg","webp","bmp"];
+const thumbCache = new Map();
+let thumbActive = 0;
+const thumbQueue = [];
+const MAX_THUMB_CONCURRENT = 3;
+const imageExts = ["png","jpg","jpeg","gif","svg","webp","bmp"];
+
+const thumbObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      const card = entry.target;
+      thumbObserver.unobserve(card);
+      const fileId = card.dataset.id;
+      const ext = card.dataset.ext;
+      const imgEl = card.querySelector(".file-thumb");
+      const iconEl = card.querySelector(".file-thumb-icon");
+      scheduleThumb(fileId, ext, imgEl, iconEl);
+    }
+  });
+}, { rootMargin: "300px", threshold: 0.01 });
+
+function scheduleThumb(fileId, ext, imgEl, iconEl) {
   if (!imageExts.includes(ext)) return;
-  const passphrase = getAutoPassphrase();
-  fetch(`${API}/files/${fileId}/preview`, {credentials:"same-origin"}).then(r => {
+  if (thumbCache.has(fileId)) {
+    const url = thumbCache.get(fileId);
+    imgEl.src = url; imgEl.style.display = "block"; if (iconEl) iconEl.style.display = "none";
+    return;
+  }
+  thumbQueue.push({ fileId, ext, imgEl, iconEl });
+  processThumbQueue();
+}
+async function processThumbQueue() {
+  if (thumbActive >= MAX_THUMB_CONCURRENT || !thumbQueue.length) return;
+  const { fileId, ext, imgEl, iconEl } = thumbQueue.shift();
+  thumbActive++;
+  try {
+    const passphrase = getAutoPassphrase();
+    const r = await fetch(`${API}/files/${fileId}/preview`, {credentials:"same-origin"});
     if (!r.ok) throw new Error();
-    return r.arrayBuffer();
-  }).then(async buf => {
+    const buf = await r.arrayBuffer();
     const ct = new Uint8Array(buf);
     const iv = ct.slice(0, 12);
     const key = await deriveKey(passphrase);
     let plain;
-    try { plain = await crypto.subtle.decrypt({ name:"AES-GCM", iv }, key, ct.slice(12)); }
-    catch { return; }
+    try { plain = await crypto.subtle.decrypt({ name:"AES-GCM", iv }, key, ct.slice(12)); } catch { return; }
     const mime = getMimeForExt(ext);
     const blob = new Blob([plain], {type: mime});
     const url = URL.createObjectURL(blob);
-    imgEl.src = url;
-    imgEl.style.display = "block";
-    if (iconEl) iconEl.style.display = "none";
-  }).catch(()=>{});
+    thumbCache.set(fileId, url);
+    imgEl.src = url; imgEl.style.display = "block"; if (iconEl) iconEl.style.display = "none";
+  } catch {} finally {
+    thumbActive--;
+    if (thumbQueue.length) processThumbQueue();
+  }
+}
+function loadCardThumb(fileId, ext, imgEl, iconEl) {
+  scheduleThumb(fileId, ext, imgEl, iconEl);
 }
 
 function renderFileCard(f, v, index) {
@@ -215,6 +250,7 @@ function renderFileCard(f, v, index) {
   const card = document.createElement("div");
   card.className = "file-card";
   card.dataset.id = f.id;
+  card.dataset.ext = f.name.split(".").pop().toLowerCase();
   card.style.animationDelay = `${index * 40}ms`;
   card.innerHTML = `
     <div class="file-thumb-wrap" onclick="previewFile('${f.id}','${safeName}','${v ? v.size_bytes : 0}')" style="cursor:pointer">
@@ -262,10 +298,9 @@ async function runFileSearch(q) {
     const v = f.current_version;
     const card = renderFileCard(f, v, i);
     if (grid) grid.appendChild(card);
-    // eager 1:1 preview
-    const imgEl = card.querySelector(".file-thumb");
-    const iconEl = card.querySelector(".file-thumb-icon");
-    loadCardThumb(f.id, f.name.split(".").pop().toLowerCase(), imgEl, iconEl);
+    // lazy 1:1 preview (IntersectionObserver, cache, max 3 concurrent)
+    if (typeof thumbObserver !== "undefined" && thumbObserver) thumbObserver.observe(card);
+    else { const imgEl = card.querySelector(".file-thumb"); const iconEl = card.querySelector(".file-thumb-icon"); loadCardThumb(f.id, f.name.split(".").pop().toLowerCase(), imgEl, iconEl); }
     // keep tbody for legacy tests (hidden)
     if (tbody) {
       const tr = document.createElement("tr"); tr.style.display="none";
@@ -295,9 +330,8 @@ export async function refreshFiles() {
     const v = f.current_version;
     const card = renderFileCard(f, v, i);
     if (grid) grid.appendChild(card);
-    const imgEl = card.querySelector(".file-thumb");
-    const iconEl = card.querySelector(".file-thumb-icon");
-    loadCardThumb(f.id, f.name.split(".").pop().toLowerCase(), imgEl, iconEl);
+    if (typeof thumbObserver !== "undefined" && thumbObserver) thumbObserver.observe(card);
+    else { const imgEl = card.querySelector(".file-thumb"); const iconEl = card.querySelector(".file-thumb-icon"); loadCardThumb(f.id, f.name.split(".").pop().toLowerCase(), imgEl, iconEl); }
     if (tbody) {
       const tr = document.createElement("tr"); tr.style.display="none";
       tr.innerHTML = `<td>${escapeHtml(f.name)}</td>`;
