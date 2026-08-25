@@ -390,6 +390,27 @@ def test_org_admin_cannot_set_other_org_backup_channel(monkeypatch):
         assert r.status_code == 403
 
 
+def test_master_switch_context_clear(monkeypatch):
+    from app import create_app, master as master_mod
+    app = create_app()
+    fake = _FakeSupabase()
+    oid = str(uuid.uuid4())
+    fake.store["_q_organizations"] = [{"id": oid, "name": "Acme"}]
+    monkeypatch.setattr(master_mod, "get_supabase", lambda: fake)
+    monkeypatch.setattr(master_mod, "log_action", lambda *a, **k: None)
+    with app.test_client() as c:
+        _login_session(c, role="master_admin", org_id=None)
+        r = c.post("/api/master/switch-org", json={"org_id": oid})
+        assert r.status_code == 200, r.get_json()
+        assert r.get_json()["act_as_org_id"] == oid
+        r2 = c.get("/api/master/context")
+        assert r2.status_code == 200, r2.get_json()
+        assert r2.get_json()["act_as_org_id"] == oid
+        r3 = c.post("/api/master/clear")
+        assert r3.status_code == 200
+        assert c.get("/api/master/context").get_json()["act_as_org_id"] is None
+
+
 def test_shares_list_and_revoke(monkeypatch):
     from app import create_app, sharing as sharing_mod
     app = create_app()
