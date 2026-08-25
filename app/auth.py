@@ -111,25 +111,32 @@ def api_login():
     return jsonify({"id": user["id"], "username": user["username"], "role": user["role"], "org_id": user["org_id"]})
 
 
-@auth_bp.route("/api/logout", methods=["POST"])
+@auth_bp.route("/api/logout", methods=["GET", "POST"])
 def api_logout():
     session.clear()
-    # Explicitly expire the session cookie (Flask's clear() alone may leave a fresh empty cookie)
+    # Explicitly expire the session cookie — Vercel edge needs multiple variants
     from flask import current_app, make_response
     resp = make_response(jsonify({"ok": True}))
-    # Use same attributes as register_security sets so browser actually deletes it
+    # Prevent caching of logout response (bfcache, CDN)
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    # Canonical delete (matches register_security)
     secure = current_app.config.get("SESSION_COOKIE_SECURE", False)
-    resp.delete_cookie(
-        current_app.config.get("SESSION_COOKIE_NAME", "session"),
-        path=current_app.config.get("SESSION_COOKIE_PATH", "/"),
-        secure=secure,
-        httponly=current_app.config.get("SESSION_COOKIE_HTTPONLY", True),
-        samesite=current_app.config.get("SESSION_COOKIE_SAMESITE", "Lax"),
-    )
-    # Also set an expired cookie for Vercel's edge cache variants
-    resp.set_cookie(
-        current_app.config.get("SESSION_COOKIE_NAME", "session"),
-        "", expires=0, max_age=0,
-        path="/", secure=secure, httponly=True, samesite="Lax"
-    )
+    name = current_app.config.get("SESSION_COOKIE_NAME", "session")
+    path = current_app.config.get("SESSION_COOKIE_PATH", "/")
+    # Try all combinations so browser deletes regardless of original Secure/SameSite
+    for sec in (secure, False):
+        for same in ("Lax", "None", None):
+            try:
+                resp.delete_cookie(name, path=path, secure=sec, httponly=True, samesite=same)
+            except Exception:
+                pass
+            try:
+                resp.delete_cookie(name, path="/", secure=sec, httponly=True, samesite=same)
+            except Exception:
+                pass
+    # Max-age 0 fallback
+    resp.set_cookie(name, "", expires=0, max_age=0, path="/", secure=False, httponly=True, samesite="Lax")
+    resp.set_cookie(name, "", expires=0, max_age=0, path=path, secure=secure, httponly=True, samesite="Lax")
     return resp

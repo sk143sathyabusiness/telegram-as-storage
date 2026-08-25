@@ -134,32 +134,53 @@ export async function doLogin() {
 }
 
 export async function logout() {
-  try { await fetch(API + "/logout", {method: "POST", credentials: "same-origin"}); } catch {}
-  // Clear all client state without relying on reload cache
+  // Try server logout with strongest credentials, no-cache, and beacon fallback
+  try {
+    await fetch(API + "/logout", {method: "POST", credentials: "include", cache: "no-store", headers: {"Cache-Control":"no-cache"}});
+  } catch {}
+  try { navigator.sendBeacon?.(API + "/logout", new Blob([], {type:"application/json"})); } catch {}
+  // Clear all client state — do NOT rely on reload
   state.currentUser = null;
   window.currentUser = null;
-  localStorage.removeItem("tv_org_id");
-  localStorage.removeItem("tv_act_org_name");
+  try {
+    localStorage.removeItem("tv_org_id");
+    localStorage.removeItem("tv_act_org_name");
+    localStorage.removeItem("tv_device_key");
+    sessionStorage.clear();
+  } catch {}
+  // Try to delete any non-HttpOnly cookies (HttpOnly will be cleared by server Set-Cookie)
+  try {
+    document.cookie.split(";").forEach(c => {
+      const eq = c.indexOf("=");
+      const name = eq > -1 ? c.substr(0, eq).trim() : c.trim();
+      if (!name) return;
+      document.cookie = name + "=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/";
+      document.cookie = name + "=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/;domain=" + location.hostname;
+    });
+  } catch {}
   _sessionModalShown = false;
   if (_sessionWarnTimer) { clearInterval(_sessionWarnTimer); _sessionWarnTimer = null; }
   const el = document.getElementById("session-timer");
   if (el) el.textContent = "";
   document.getElementById("app")?.classList.remove("visible");
+  document.getElementById("app").style.display = "none";
   const loginScreen = document.getElementById("login-screen");
-  if (loginScreen) loginScreen.style.display = "";
-  document.getElementById("l-user").value = "";
-  document.getElementById("l-pass").value = "";
-  document.getElementById("topbar-user").textContent = "";
-  document.getElementById("topbar-role").textContent = "";
-  // Reset folder cache so next login reloads fresh
+  if (loginScreen) { loginScreen.style.display = ""; loginScreen.style.opacity = "1"; }
+  const u = document.getElementById("l-user"), p = document.getElementById("l-pass");
+  if (u) u.value = "";
+  if (p) p.value = "";
+  const tu = document.getElementById("topbar-user"), tr = document.getElementById("topbar-role");
+  if (tu) tu.textContent = "";
+  if (tr) tr.textContent = "";
   state.currentFolderId = null;
   state.currentFolderName = "~";
   state.folderMap = {};
-  // Use hard reload that bypasses cache as fallback, but already showing login
-  // location.reload() sometimes restores bfcache with old DOM — force navigation
+  // Hide any open modal
+  try { window.closeModal?.("session-modal"); } catch {}
+  // Force navigation that busts bfcache and CDN cache — not reload()
   window.location.hash = "";
-  // Small delay then reload to ensure cookie deletion propagated
-  setTimeout(() => location.reload(), 150);
+  // Use replace with cache-bust query so Vercel and browser don't serve bfcache
+  setTimeout(() => { location.replace("/?logout=" + Date.now()); }, 50);
 }
 
 export async function sessionLogin() {
@@ -234,6 +255,24 @@ fetch(API + "/me", {credentials: "same-origin"}).then(async r => {
   }
 });
 
+// Wire logout button explicitly (CSP may block inline onclick in some browsers)
+if (typeof document !== "undefined") {
+  document.addEventListener("DOMContentLoaded", () => {
+    document.getElementById("logout-btn")?.addEventListener("click", (e) => { e.preventDefault(); logout(); });
+  });
+  // bfcache: if user hits back after logout, force re-check /me
+  window.addEventListener("pageshow", (e) => {
+    if (e.persisted && !state.currentUser) {
+      fetch(API + "/me", {credentials:"include", cache:"no-store"}).then(r => {
+        if (!r.ok) {
+          document.getElementById("app")?.classList.remove("visible");
+          const ls = document.getElementById("login-screen");
+          if (ls) ls.style.display = "";
+        }
+      }).catch(()=>{});
+    }
+  });
+}
 // Expose for inline handlers and cross-module legacy
 if (typeof window !== "undefined") {
   window.doLogin = doLogin;
