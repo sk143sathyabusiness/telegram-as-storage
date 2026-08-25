@@ -12,7 +12,7 @@ import asyncio
 import json
 from datetime import datetime
 
-from flask import Blueprint, jsonify, Response
+from flask import Blueprint, jsonify, request, Response
 
 import telegram_service
 from app.config import BACKUP_CHANNEL_ID, TELEGRAM_CONFIGURED
