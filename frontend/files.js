@@ -1295,6 +1295,7 @@ if (typeof window !== "undefined") {
   window.restoreFromTrash = restoreFromTrash;
   window.hardDelete = hardDelete;
   window.previewFile = previewFile;
+  window.playFile = playFile;
   window.downloadPreviewFile = downloadPreviewFile;
   window.editFile = editFile;
   window.saveEdit = saveEdit;
