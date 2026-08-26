@@ -1,6 +1,13 @@
 // frontend/files.js — file list, drag/drop, folder-upload, progress ETA, preview/edit, versions/trash
 import { API, state, toast, fmt, fmtDate, fmtSpeed, escapeHtml, openModal, closeModal, hideSkeleton, showSkeleton, revealOnScroll, getPreviewBlobUrl, setPreviewBlobUrl } from "./api.js";
 
+function fmtEta(sec) {
+  if (!isFinite(sec) || sec < 0) return "—";
+  const m = Math.floor(sec / 60);
+  const s = Math.round(sec % 60);
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
 // ── ENCRYPTION (behind the screen) ──────────────────────────────────────
 // Auto-derived per-org passphrase so users never enter it manually.
 // Uses org_id from state.currentUser (returned by /api/login and /api/me) —
@@ -141,13 +148,52 @@ async function uploadFileChunked(file, passphrase) {
   div.className = "upload-item";
   const pid = "p_" + Math.random().toString(36).slice(2);
   const eid = "e_" + Math.random().toString(36).slice(2);
+  const ctrl = { paused: false, cancelled: false, waiters: [], ac: null };
   div.innerHTML = `<div class="upload-item-name">${escapeHtml(file.name)} <span class="file-size" style="color:var(--muted);font-size:11px">${fmt(file.size)}</span></div>
     <div class="pbar"><div class="pbar-fill" id="${pid}"></div></div>
-    <div class="upload-eta" id="${eid}"></div>`;
+    <div class="upload-eta" id="${eid}"></div>
+    <div class="upload-actions">
+      <button class="btn-mini" id="${pid}-t" type="button">Pause</button>
+      <button class="btn-mini danger" id="${pid}-c" type="button">Cancel</button>
+    </div>`;
   document.getElementById("upload-items").appendChild(div);
   const t0 = Date.now();
+  let done = 0;
+  const setEta = (txt, cls) => {
+    const el = document.getElementById(eid); if (!el) return;
+    el.textContent = txt; el.className = "upload-eta" + (cls ? " " + cls : "");
+  };
+  const updateProgress = () => {
+    const pct = Math.round((done / total) * 100);
+    const pidEl = document.getElementById(pid); if (pidEl) pidEl.style.width = pct + "%";
+    if (ctrl.cancelled) return setEta("Cancelled", "cancelled");
+    if (ctrl.paused) return setEta(`Paused ${pct}%`, "paused");
+    const elapsed = (Date.now() - t0) / 1000;
+    const speed = (done * UPLOAD_CHUNK_BYTES) / Math.max(elapsed, .01);
+    const eta = Math.round(((total - done) * UPLOAD_CHUNK_BYTES) / Math.max(speed, 1));
+    setEta(`${pct}% · ${fmtSpeed(speed)} · ETA ${fmtEta(eta)}`);
+  };
+  const pauseBtn = div.querySelector(`#${pid}-t`);
+  const cancelBtn = div.querySelector(`#${pid}-c`);
+  pauseBtn.addEventListener("click", () => {
+    if (ctrl.cancelled) return;
+    ctrl.paused = !ctrl.paused;
+    pauseBtn.textContent = ctrl.paused ? "Resume" : "Pause";
+    if (!ctrl.paused) { const ws = ctrl.waiters; ctrl.waiters = []; ws.forEach(r => r()); }
+    updateProgress();
+  });
+  cancelBtn.addEventListener("click", () => {
+    if (ctrl.cancelled) return;
+    ctrl.cancelled = true;
+    if (!ctrl.ac) ctrl.ac = new AbortController();
+    ctrl.ac.abort();
+    const ws = ctrl.waiters; ctrl.waiters = []; ws.forEach(r => r());
+    pauseBtn.disabled = true; cancelBtn.disabled = true;
+    setEta("Cancelled", "cancelled");
+  });
   try {
-    for (let idx = 0, start = 0; start < file.size || (file.size === 0 && idx === 0); start += UPLOAD_CHUNK_BYTES, idx++) {
+    async function buildRecord(idx) {
+      const start = idx * UPLOAD_CHUNK_BYTES;
       const slice = file.slice(start, Math.min(start + UPLOAD_CHUNK_BYTES, file.size));
       const buf = await slice.arrayBuffer();
       const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -156,48 +202,58 @@ async function uploadFileChunked(file, passphrase) {
       recBody.set(_u32be(12 + ct.length), 0);
       recBody.set(iv, 4);
       recBody.set(ct, 16);
-      let rec;
       if (idx === 0) {
-        rec = new Uint8Array(16 + recBody.length);
+        const rec = new Uint8Array(16 + recBody.length);
         rec.set(CHUNKED_MAGIC, 0);
         rec.set(recBody, 16);
-      } else {
-        rec = recBody;
+        return new Blob([rec]);
       }
-      // incremental sha256 fold over the encrypted records (no full-file buffering)
-      const fold = new Uint8Array(acc.length + rec.length);
-      fold.set(acc, 0); fold.set(rec, acc.length);
-      acc = new Uint8Array(await crypto.subtle.digest("SHA-256", fold));
-      const recBlob = new Blob([rec]);
-      const r = await _xhrPost(`${API}/files/chunk`, fd => {
-        fd.append("chunk", recBlob, file.name);
-        fd.append("filename", file.name);
-        fd.append("folder_id", folderId);
-        fd.append("index", String(idx));
-        fd.append("total", String(total));
-      });
-      if (!r.ok) throw new Error(r.error || `chunk ${idx} failed (HTTP ${r.status})`);
-      messageIds.push(r.message_id);
-      const pct = Math.round(((idx + 1) / total) * 100);
-      const pidEl = document.getElementById(pid); if (pidEl) pidEl.style.width = pct + "%";
-      const elapsed = (Date.now() - t0) / 1000;
-      const speed = recBlob.size / Math.max(elapsed, .01);
-      const eta = Math.round(((total - (idx + 1)) * recBlob.size) / Math.max(speed, 1));
-      const eidEl = document.getElementById(eid); if (eidEl) eidEl.textContent = `${pct}% · ${fmtSpeed(speed)} · ETA ${eta}s`;
+      return new Blob([recBody]);
     }
-    const sha256 = Array.from(acc).map(b => b.toString(16).padStart(2, "0")).join("");
+    async function uploadOne(idx) {
+      for (let attempt = 0; ; attempt++) {
+        if (ctrl.cancelled) throw new Error("cancelled");
+        const recBlob = await buildRecord(idx);
+        if (!ctrl.ac) ctrl.ac = new AbortController();
+        const r = await _xhrPost(`${API}/files/chunk`, fd => {
+          fd.append("chunk", recBlob, file.name);
+          fd.append("filename", file.name);
+          fd.append("folder_id", folderId);
+          fd.append("index", String(idx));
+          fd.append("total", String(total));
+        }, ctrl.ac.signal);
+        if (r.aborted) throw new Error("cancelled");
+        if (r.ok) return r.message_id;
+        if (attempt >= 3) throw new Error(r.error || `chunk ${idx} failed (HTTP ${r.status})`);
+      }
+    }
+    let nextIdx = 0;
+    async function worker() {
+      for (let idx; (idx = nextIdx++) < total; ) {
+        if (ctrl.cancelled) return;
+        if (ctrl.paused) { await new Promise(res => { ctrl.waiters.push(res); }); if (ctrl.cancelled) return; }
+        messageIds[idx] = await uploadOne(idx);
+        done++;
+        updateProgress();
+      }
+    }
+    await Promise.all(Array.from({ length: CONC }, worker));
+    if (ctrl.cancelled) return { ok: false, error: "cancelled" };
+    if (messageIds.some(m => m == null)) throw new Error("missing message ids");
     const c = await _xhrPostJSON(`${API}/files/commit`, {
-      filename: file.name, folder_id: folderId, sha256, total_size: file.size, message_ids: messageIds,
-    });
+      filename: file.name, folder_id: folderId, sha256: "", total_size: file.size, message_ids: messageIds,
+    }, ctrl.ac ? ctrl.ac.signal : undefined);
+    if (ctrl.cancelled || c.aborted) return { ok: false, error: "cancelled" };
     if (!c.ok) throw new Error(c.error || "commit failed");
     return { ok: true };
   } catch (e) {
-    const eidEl = document.getElementById(eid); if (eidEl) eidEl.textContent = "Failed";
+    if (ctrl.cancelled) setEta("Cancelled", "cancelled");
+    else setEta("Failed");
     return { ok: false, error: e.message };
   }
 }
 
-function _xhrPost(url, buildForm) {
+function _xhrPost(url, buildForm, signal) {
   return new Promise((resolve) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", url);
@@ -210,11 +266,13 @@ function _xhrPost(url, buildForm) {
       else resolve({ ok: false, error: d.error || `HTTP ${xhr.status}`, status: xhr.status });
     };
     xhr.onerror = () => resolve({ ok: false, error: "Network error" });
+    xhr.onabort = () => resolve({ ok: false, aborted: true, error: "aborted" });
+    if (signal) signal.addEventListener("abort", () => xhr.abort());
     xhr.send(fd);
   });
 }
 
-function _xhrPostJSON(url, json) {
+function _xhrPostJSON(url, json, signal) {
   return new Promise((resolve) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", url);
@@ -226,6 +284,8 @@ function _xhrPostJSON(url, json) {
       else resolve({ ok: false, error: d.error || `HTTP ${xhr.status}`, status: xhr.status });
     };
     xhr.onerror = () => resolve({ ok: false, error: "Network error" });
+    xhr.onabort = () => resolve({ ok: false, aborted: true, error: "aborted" });
+    if (signal) signal.addEventListener("abort", () => xhr.abort());
     xhr.send(JSON.stringify(json));
   });
 }
