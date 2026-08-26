@@ -67,7 +67,19 @@ export async function uploadFiles(triggerEl) {
   let totalBytes = 0, sentBytes = 0, okCount = 0, errCount = 0;
   const prepared = [];
   for (const file of files) {
-    const encrypted = await encryptFile(file, passphrase);
+    let srcBlob;
+    try {
+      // Read the File into memory immediately. If we deferred this, the browser
+      // can revoke the OS file handle (e.g. file moved/locked/cloud-synced) and
+      // throw NotReadableError mid-upload. Reading once, up front, avoids that.
+      const buf = await file.arrayBuffer();
+      srcBlob = new Blob([buf], { type: file.type || "application/octet-stream" });
+    } catch (e) {
+      errCount++;
+      toast(`Cannot read "${file.name}": ${e.message}`, "err");
+      continue;
+    }
+    const encrypted = await encryptFile(srcBlob, passphrase);
     prepared.push({ file, encrypted });
     totalBytes += encrypted.size;
   }

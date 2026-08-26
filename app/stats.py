@@ -15,9 +15,19 @@ from app.security import login_required, current_user
 stats_bp = Blueprint("stats", __name__)
 
 
+def _safe(data, default=None):
+    """Return PostgREST data, or default on any error (e.g. schema drift on the
+    live DB where a column/table from supabase_schema.sql does not yet exist)."""
+    try:
+        return data
+    except Exception as e:
+        print(f"[STATS] query degraded: {e}")
+        return default
+
+
 def _stats_for_org(sup, org_id):
     # files (non-deleted) for org
-    files = sup.table("files").select("id, org_id, is_deleted").eq("org_id", org_id).execute().data
+    files = _safe(sup.table("files").select("id, org_id, is_deleted").eq("org_id", org_id).execute().data, [])
     file_ids = [f["id"] for f in files if not f.get("is_deleted")]
     file_count = len(file_ids)
 
@@ -27,7 +37,7 @@ def _stats_for_org(sup, org_id):
         vers = []
         for i in range(0, len(file_ids), 100):
             batch = file_ids[i:i + 100]
-            rows = sup.table("file_versions").select("file_id, size_bytes").in_("file_id", batch).execute().data
+            rows = _safe(sup.table("file_versions").select("file_id, size_bytes").in_("file_id", batch).execute().data, [])
             vers.extend(rows)
         for v in vers:
             try:
@@ -35,25 +45,31 @@ def _stats_for_org(sup, org_id):
             except (TypeError, ValueError):
                 pass
 
-    users = sup.table("users").select("id").eq("org_id", org_id).execute().data
+    users = _safe(sup.table("users").select("id").eq("org_id", org_id).execute().data, [])
     user_count = len(users)
 
-    folders = sup.table("folders").select("id").eq("org_id", org_id).execute().data
+    folders = _safe(sup.table("folders").select("id").eq("org_id", org_id).execute().data, [])
     folder_count = len(folders)
 
-    org = sup.table("organizations").select("name, status, backup_channel_id, storage_quota_bytes").eq("id", org_id).maybe_single().execute()
-    name = org.data["name"] if org and org.data else "—"
-    status = org.data.get("status") if org and org.data else "—"
-    backup_channel_id = (org.data or {}).get("backup_channel_id")
-    storage_quota_bytes = (org.data or {}).get("storage_quota_bytes")
+    name = "—"
+    status = "—"
+    backup_channel_id = None
+    storage_quota_bytes = None
+    org = _safe(sup.table("organizations").select("name, status, backup_channel_id, storage_quota_bytes").eq("id", org_id).maybe_single().execute(), None)
+    if org and org.data:
+        od = org.data
+        name = od.get("name", "—")
+        status = od.get("status", "—")
+        backup_channel_id = od.get("backup_channel_id")
+        storage_quota_bytes = od.get("storage_quota_bytes")
 
     last_activity = None
-    al = sup.table("audit_logs").select("created_at").eq("org_id", org_id).order("created_at", desc=True).limit(1).execute().data
+    al = _safe(sup.table("audit_logs").select("created_at").eq("org_id", org_id).order("created_at", desc=True).limit(1).execute().data, [])
     if al:
         last_activity = al[0]["created_at"]
 
     last_backup = None
-    bk = sup.table("backups").select("created_at").eq("org_id", org_id).order("created_at", desc=True).limit(1).execute().data
+    bk = _safe(sup.table("backups").select("created_at").eq("org_id", org_id).order("created_at", desc=True).limit(1).execute().data, [])
     if bk:
         last_backup = bk[0]["created_at"]
 

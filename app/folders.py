@@ -35,7 +35,14 @@ def api_folders_get():
     err = _require_active_org(sup, user["org_id"])
     if err:
         return err
-    data = sup.table("folders").select("id, name, parent_id, is_essential").eq("org_id", user["org_id"]).order("name").execute().data
+    try:
+        data = sup.table("folders").select("id, name, parent_id, is_essential").eq("org_id", user["org_id"]).order("name").execute().data
+    except Exception as e:
+        # Live DB may predate the is_essential column (schema drift) — degrade gracefully.
+        print(f"[FOLDERS] is_essential missing, falling back: {e}")
+        data = sup.table("folders").select("id, name, parent_id").eq("org_id", user["org_id"]).order("name").execute().data
+        for d in data:
+            d["is_essential"] = False
     if user["role"] in ("org_admin", "master_admin"):
         return jsonify([dict(r) for r in data])
     visible_ids = set()
