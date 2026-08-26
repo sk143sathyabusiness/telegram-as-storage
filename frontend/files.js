@@ -408,6 +408,8 @@ function renderFileCard(f, v, index) {
         <button class="card-menu-btn" onclick="toggleMenu('${f.id}')" aria-label="Options">⋯</button>
         <div class="card-dropdown" id="menu-${f.id}" style="display:none">
           <button onclick="previewFile('${f.id}','${safeName}','${v ? v.size_bytes : 0}'); closeAllMenus()">👁 Preview</button>
+          ${isMediaExt(f.name) ? `<button onclick="playFile('${f.id}','${safeName}','${v ? v.size_bytes : 0}'); closeAllMenus()">▶ Play</button>` : ""}
+          ${isDocExt(f.name) ? `<button onclick="playFile('${f.id}','${safeName}','${v ? v.size_bytes : 0}'); closeAllMenus()">📄 View</button>` : ""}
           <button onclick="shareFile('${f.id}','${safeName}'); closeAllMenus()">Share</button>
           <button onclick="emailFile('${f.id}','${safeName}'); closeAllMenus()">Email</button>
           <button onclick="editFile('${f.id}','${safeName}','${v ? v.size_bytes : 0}'); closeAllMenus()">Edit</button>
@@ -649,6 +651,14 @@ export async function hardDelete(fileId) {
 }
 
 // ── PREVIEW / EDIT (kept in files.js per drag/drop ownership) ───────────────
+function isMediaExt(name) {
+  const e = (name.split(".").pop() || "").toLowerCase();
+  return ["mp4","webm","mkv","ogv","mov","mp3","wav","ogg","m4a","aac","flac"].includes(e);
+}
+function isDocExt(name) {
+  const e = (name.split(".").pop() || "").toLowerCase();
+  return ["pdf","doc","docx","xls","xlsx","ppt","pptx","txt","md","csv","rtf","odt","ods","odp"].includes(e);
+}
 let _previewFileId = null;
 let _previewFilename = "";
 
@@ -664,10 +674,18 @@ export function previewFile(fileId, filename, sizeBytes) {
     loadPreviewAsBlob(content, `<img src="" alt="${escapeHtml(filename)}" style="max-width:100%;max-height:70vh;display:block;margin:auto;border-radius:4px">`);
   } else if (ext === "pdf") {
     loadPreviewAsBlob(content, `<iframe src="" style="width:100%;height:70vh;border:none;border-radius:4px"></iframe>`);
-  } else if (["mp4","webm","ogg"].includes(ext) && ext !== "ogg") {
-    loadPreviewAsBlob(content, `<video controls style="max-width:100%;max-height:70vh;display:block;margin:auto"><source src="" type="video/${ext}"></video>`);
-  } else if (["mp3","wav"].includes(ext)) {
-    loadPreviewAsBlob(content, `<div style="text-align:center;padding:40px"><div style="font-size:48px;margin-bottom:16px">🎵</div><audio controls style="width:100%"><source src="" type="audio/${ext}"></audio></div>`);
+  } else if (["mp4","webm","ogv","mov"].includes(ext)) {
+    playMediaStreaming(content, ext, false);
+  } else if (["mp3","wav","ogg","m4a","aac","flac"].includes(ext)) {
+    playMediaStreaming(content, ext, true);
+  } else if (ext === "mkv") {
+    content.innerHTML = `
+      <div style="text-align:center;padding:60px 20px">
+        <div style="font-size:64px;margin-bottom:16px">🎬</div>
+        <div style="font-size:16px;margin-bottom:8px">${escapeHtml(filename)}</div>
+        <div style="font-size:13px;color:var(--muted);margin-bottom:20px">MKV can't be played inside the browser (no in-browser decoder). Download to view it.</div>
+        <button class="btn-sm active" onclick="downloadPreviewFile()">⬇ Download to view</button>
+      </div>`;
   } else if (["txt","md","json","csv","html","css","js","py","java","c","cpp","h","xml","yaml","yml","sh","log","ini","cfg","conf","env","sql","rb","go","rs","ts","tsx","jsx","vue","svelte","toml"].includes(ext)) {
     loadPreviewAsText(content, ext);
   } else if (ext === "docx") {
@@ -730,6 +748,83 @@ function loadPreviewAsBlob(container, htmlTemplate) {
   }).catch(err => {
     container.innerHTML = `<div style="text-align:center;padding:40px;color:var(--danger)">Preview failed: ${escapeHtml(err.message)}</div>`;
   });
+}
+
+export function playFile(fileId, filename, sizeBytes) {
+  previewFile(fileId, filename, sizeBytes);
+}
+
+export async function playMediaStreaming(content, ext, isAudio) {
+  const passphrase = getAutoPassphrase();
+  let key;
+  try { key = await deriveKey(passphrase); }
+  catch { content.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Decryption failed (wrong passphrase?)</div>'; return; }
+  content.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Decrypting and preparing playback…</div>';
+  try {
+    const resp = await fetch(`${API}/files/${_previewFileId}/preview`, {credentials:"same-origin"});
+    if (!resp.ok) throw new Error("Preview failed");
+    const total = parseInt(resp.headers.get("Content-Length") || "0", 10);
+    const reader = resp.body.getReader();
+    const parts = [];
+    let leftover = new Uint8Array(0);
+    let init = false, chunked = false, firstRecord = true;
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      const merged = new Uint8Array(leftover.length + value.length);
+      merged.set(leftover, 0);
+      merged.set(value, leftover.length);
+      let pos = 0;
+      while (true) {
+        if (!init) {
+          if (merged.length - pos < 16) break;
+          chunked = merged.subarray(pos, pos + 16).every((b, i) => b === CHUNKED_MAGIC[i]);
+          init = true;
+        }
+        if (!chunked) break; // legacy single [IV(12)][ct] — handled after stream ends
+        const prefix = firstRecord ? 16 : 0;
+        if (merged.length - pos < prefix + 4) break;
+        const len = _readU32be(merged, pos + prefix);
+        const recLen = prefix + 4 + len;
+        if (merged.length - pos < recLen) break;
+        const iv = merged.subarray(pos + prefix + 4, pos + prefix + 4 + 12);
+        const ct = merged.subarray(pos + prefix + 4 + 12, pos + recLen);
+        const plain = new Uint8Array(await crypto.subtle.decrypt({name:"AES-GCM", iv}, key, ct));
+        parts.push(plain);
+        firstRecord = false;
+        pos += recLen;
+      }
+      leftover = merged.subarray(pos);
+    }
+    if (!chunked && leftover.length) {
+      // legacy format: whole buffer is [IV(12)][ct]
+      const iv = leftover.subarray(0, 12);
+      const ct = leftover.subarray(12);
+      const plain = new Uint8Array(await crypto.subtle.decrypt({name:"AES-GCM", iv}, key, ct));
+      parts.push(plain);
+    }
+    const mime = isAudio
+      ? (ext === "wav" ? "audio/wav" : ext === "ogg" ? "audio/ogg" : ext === "m4a" ? "audio/mp4" : "audio/mpeg")
+      : (ext === "webm" ? "video/webm" : ext === "ogv" ? "video/ogg" : "video/mp4");
+    const blob = new Blob(parts, {type: mime});
+    const url = URL.createObjectURL(blob);
+    const media = document.createElement(isAudio ? "audio" : "video");
+    media.controls = true;
+    if (isAudio) media.style.width = "100%";
+    else { media.style.maxWidth = "100%"; media.style.maxHeight = "80vh"; media.style.display = "block"; media.style.margin = "auto"; }
+    content.innerHTML = "";
+    content.appendChild(media);
+    if (total > 800 * 1024 * 1024) {
+      const note = document.createElement("div");
+      note.style.cssText = "text-align:center;color:var(--muted);font-size:11px;padding:6px";
+      note.textContent = `Large file (${fmt(total)}): decrypted in-browser, so it needs enough RAM to play. If playback fails, use Download instead.`;
+      content.appendChild(note);
+    }
+    media.src = url;
+    media.load();
+  } catch (err) {
+    content.innerHTML = `<div style="text-align:center;padding:40px;color:var(--danger)">Playback failed: ${escapeHtml(err.message)}<br><button class="btn-sm active" onclick="downloadPreviewFile()">⬇ Download to view</button></div>`;
+  }
 }
 
 function loadPreviewAsText(container, ext) {

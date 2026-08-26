@@ -507,6 +507,8 @@ def api_files_preview(file_id):
     print(f"[PREVIEW] Serving preview for '{fdata['name']}'")
     resp = Response(stream_with_context(generate()), mimetype="application/octet-stream")
     resp.headers["Content-Disposition"] = f'inline; filename="{fdata["name"]}"'
+    if size_bytes:
+        resp.headers["Content-Length"] = str(size_bytes)
     return resp
 
 
