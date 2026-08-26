@@ -32,6 +32,7 @@ class _Table:
     def eq(self, *a): return self
     def ilike(self, *a, **k): return self
     def in_(self, *a): return self
+    def is_(self, *a, **k): return self
     def order(self, *a, **k): return self
     def limit(self, *a): return self
 
@@ -40,7 +41,16 @@ class _Table:
         return self
 
     def insert(self, rows):
-        self.store.setdefault(self.name, []).append(rows)
+        if isinstance(rows, dict):
+            rows = [rows]
+        new_rows = []
+        for r in rows:
+            r = dict(r)
+            if "id" not in r:
+                r["id"] = str(uuid.uuid4())
+            new_rows.append(r)
+        self.store.setdefault(self.name, []).extend(new_rows)
+        self._inserted = new_rows
         return self
 
     def update(self, *a):
@@ -58,6 +68,10 @@ class _Table:
         q = self.store.get("_q_" + self.name)
         if q is not None:
             return _Result(list(q))  # non-consuming copy (re-readable)
+        if getattr(self, "_inserted", None) is not None:
+            res = _Result(self._inserted)
+            self._inserted = None
+            return res
         if self.name == "files":
             return _Result([])
         if self.name in ("audit_logs", "backups"):
@@ -466,3 +480,54 @@ def test_shares_list_and_revoke(monkeypatch):
         assert any(s["id"] == sid for s in r.get_json())
         r2 = c.delete(f"/api/shares/{sid}")
         assert r2.status_code == 200, r2.get_json()
+
+
+def test_auto_backup_on_upload_forwards_and_snapshots(monkeypatch):
+    from app import create_app, backups as backups_mod
+    app = create_app()
+    fake = _FakeSupabase()
+    oid = str(uuid.uuid4())
+    org = {"id": oid, "name": "Acme", "telegram_chat_id": "-1001", "backup_channel_id": "-1002"}
+    # two entries: one consumed by the chat-id lookup, one by _make_backup's lookup
+    fake.store["_q_organizations"] = [dict(org), dict(org)]
+    monkeypatch.setattr(backups_mod, "get_supabase", lambda: fake)
+    monkeypatch.setattr(backups_mod, "log_action", lambda *a, **k: None)
+    monkeypatch.setattr(backups_mod.telegram_service, "is_configured", lambda: True)
+    forwarded = {}
+    monkeypatch.setattr(backups_mod.telegram_service, "backup_essential_folder",
+                        lambda src, bc, mids: forwarded.update({"src": src, "bc": bc, "mids": mids}) or [1])
+    monkeypatch.setattr(backups_mod.telegram_service, "upload_chunks", lambda *a, **k: [999])
+    user = {"id": str(uuid.uuid4()), "username": "u", "role": "org_admin", "org_id": oid}
+    backups_mod.auto_backup_on_upload(fake, oid, user, [11, 12])
+    assert forwarded.get("mids") == [11, 12], forwarded
+    assert forwarded.get("src") == -1001
+    assert forwarded.get("bc") == -1002
+    assert fake.store.get("backups"), "expected a backups insert from the snapshot"
+
+
+def test_upload_triggers_auto_backup(monkeypatch):
+    from app import create_app, files as files_mod, backups as backups_mod
+    app = create_app()
+    fake = _FakeSupabase()
+    oid = str(uuid.uuid4())
+    org = {"id": oid, "name": "A", "telegram_chat_id": "-1001", "backup_channel_id": "-1002", "status": "active"}
+    fake.store["_q_organizations"] = [dict(org), dict(org)]
+    monkeypatch.setattr(files_mod, "get_supabase", lambda: fake)
+    monkeypatch.setattr(files_mod, "log_action", lambda *a, **k: None)
+    monkeypatch.setattr(files_mod, "_require_active_org", lambda *a, **k: None)
+    monkeypatch.setattr(files_mod, "_check_permission", lambda *a, **k: "read_write")
+    monkeypatch.setattr(files_mod.telegram_service, "upload_chunks_streaming", lambda *a, **k: [5])
+    monkeypatch.setattr(backups_mod.telegram_service, "is_configured", lambda: True)
+    monkeypatch.setattr(backups_mod.telegram_service, "backup_essential_folder", lambda *a, **k: [1])
+    monkeypatch.setattr(backups_mod.telegram_service, "upload_chunks", lambda *a, **k: [9])
+    called = {}
+    orig = backups_mod.auto_backup_on_upload
+    monkeypatch.setattr(backups_mod, "auto_backup_on_upload", lambda s, o, u, m: called.setdefault("hit", True) or orig(s, o, u, m))
+    with app.test_client() as c:
+        _login_session(c, role="org_admin", org_id=oid)
+        import io
+        r = c.post("/api/files/upload",
+                   data={"file": (io.BytesIO(b"hello"), "doc.txt"), "filename": "doc.txt"},
+                   content_type="multipart/form-data")
+    assert r.status_code == 200, r.get_json()
+    assert called.get("hit") is True, "auto_backup_on_upload was not triggered by upload"

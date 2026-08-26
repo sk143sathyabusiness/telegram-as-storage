@@ -239,6 +239,13 @@ def api_files_upload():
             "detail": f"v{new_ver} · {fmt_size(size_bytes)} · folder={folder_name}",
         },
     }).execute()
+    # Auto-backup on upload: forward bytes to backup channel + full snapshot.
+    # Blocks the response until the backup succeeds (org policy: every upload).
+    try:
+        from app.backups import auto_backup_on_upload
+        auto_backup_on_upload(sup, user["org_id"], user, message_ids)
+    except Exception as e:
+        return jsonify({"error": f"Upload stored but auto-backup failed: {e}"}), 500
     return jsonify({"ok": True, "file_id": file_id, "version": new_ver})
 
 

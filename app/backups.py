@@ -147,6 +147,27 @@ def _make_backup(sup, org_id, user, essential_only=False):
     return {"name": remote_name, "size_bytes": size}
 
 
+def auto_backup_on_upload(sup, org_id, user, message_ids):
+    """After a file/version upload, ensure an immediate backup:
+    1) forward the uploaded encrypted chunks to the org's backup channel
+       (server-side copy — no re-upload of bytes), and
+    2) create a full metadata snapshot of the org.
+
+    Raises on any failure so the caller can block the upload until the
+    backup succeeds (org policy: every upload is backed up).
+    """
+    org = sup.table("organizations").select("telegram_chat_id").eq("id", org_id).maybe_single().execute()
+    source_chat_id = int(org.data["telegram_chat_id"]) if org and org.data and org.data.get("telegram_chat_id") else None
+    backup_channel_id = _get_org_backup_channel_id(sup, org_id)
+    if backup_channel_id and source_chat_id:
+        try:
+            telegram_service.backup_essential_folder(source_chat_id, backup_channel_id, list(message_ids))
+        except Exception as e:
+            raise RuntimeError(f"Failed to forward file to backup channel: {e}")
+    # Full metadata snapshot (raises RuntimeError if no backup channel configured)
+    _make_backup(sup, org_id, user, essential_only=False)
+
+
 @backups_bp.route("/api/backup/create", methods=["POST"])
 @login_required
 def api_backup_create():
