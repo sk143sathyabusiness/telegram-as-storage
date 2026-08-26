@@ -498,32 +498,15 @@ export async function downloadFile(fileId, filename) {
 
   const toastEl = document.getElementById("toast");
   toastEl.className = "toast show";
-  toastEl.textContent = "⬇ Downloading 0%";
+  toastEl.textContent = "⬇ Downloading…";
 
-  const r = await fetch(`${API}/files/${fileId}/download`);
-  if (!r.ok) { toast("Download failed", "err"); return; }
-  const cl = +r.headers.get("Content-Length") || 0;
-  const reader = r.body.getReader();
-  const chunks = [];
-  let received = 0;
-  const t0 = Date.now();
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    received += value.length;
-    if (cl) {
-      const pct = Math.round(received / cl * 100);
-      const elapsed = (Date.now() - t0) / 1000;
-      const speed = received / Math.max(elapsed, .01);
-      const eta = Math.round((cl - received) / Math.max(speed, 1));
-      toastEl.textContent = `⬇ ${pct}% · ${fmtSpeed(speed)} · ETA ${eta}s`;
-    }
+  let ct;
+  try {
+    ct = await fetchAllChunks(fileId);
+  } catch (e) {
+    toast("Download failed", "err"); return;
   }
   toastEl.textContent = "🔓 Decrypting…";
-  const ct = new Uint8Array(received);
-  let off = 0;
-  for (const c of chunks) { ct.set(c, off); off += c.length; }
   let plain;
   try {
     plain = await decryptAssembled(ct, passphrase);
@@ -770,65 +753,38 @@ export async function playMediaStreaming(content, ext, isAudio) {
     : (ext === "webm" ? "video/webm" : ext === "ogv" ? "video/ogg" : "video/mp4");
   content.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Decrypting and preparing playback…</div>';
   try {
-    const { reader, total } = await openPreviewStream();
-    await playViaBlob(content, ext, isAudio, mime, key, reader, total);
+    const ct = await fetchAllChunks(_previewFileId);
+    const plain = await decryptAssembled(ct, passphrase);
+    playViaBlob(content, ext, isAudio, mime, plain);
   } catch (err) {
     content.innerHTML = `<div style="text-align:center;padding:40px;color:var(--danger)">Playback failed: ${escapeHtml(err.message)}<br><button class="btn-sm active" onclick="downloadPreviewFile()">⬇ Download to view</button></div>`;
   }
 }
 
-async function openPreviewStream() {
-  const resp = await fetch(`${API}/files/${_previewFileId}/preview`, {credentials:"same-origin"});
-  if (!resp.ok) throw new Error("Preview failed");
-  const total = parseInt(resp.headers.get("Content-Length") || "0", 10);
-  return { reader: resp.body.getReader(), total };
-}
-
-// Fetch the encrypted preview and decrypt chunk records incrementally,
-// invoking onPlain(plainChunk) for each decrypted record (or the legacy blob).
-async function streamDecryptRecords(reader, key, onPlain) {
-  let leftover = new Uint8Array(0);
-  let init = false, chunked = false, firstRecord = true;
-  while (true) {
-    const {done, value} = await reader.read();
-    if (done) break;
-    const merged = new Uint8Array(leftover.length + value.length);
-    merged.set(leftover, 0); merged.set(value, leftover.length);
-    let pos = 0;
-    while (true) {
-      if (!init) {
-        if (merged.length - pos < 16) break;
-        chunked = merged.subarray(pos, pos + 16).every((b, i) => b === CHUNKED_MAGIC[i]);
-        init = true;
-      }
-      if (!chunked) break; // legacy single [IV(12)][ct] handled after stream ends
-      const prefix = firstRecord ? 16 : 0;
-      if (merged.length - pos < prefix + 4) break;
-      const len = _readU32be(merged, pos + prefix);
-      const recLen = prefix + 4 + len;
-      if (merged.length - pos < recLen) break;
-      const iv = merged.subarray(pos + prefix + 4, pos + prefix + 4 + 12);
-      const ct = merged.subarray(pos + prefix + 4 + 12, pos + recLen);
-      const plain = new Uint8Array(await crypto.subtle.decrypt({name:"AES-GCM", iv}, key, ct));
-      await onPlain(plain);
-      firstRecord = false;
-      pos += recLen;
+// Fetch every stored chunk with many small parallel requests (one per Telegram
+// message), mirroring the upload model. Avoids one 60s-bounded stream so large
+// files download/replay reliably on serverless. Stops at the first 404.
+async function fetchAllChunks(fileId) {
+  const results = [];
+  let next = 0, stop = false;
+  async function worker() {
+    while (!stop) {
+      const i = next++;
+      const r = await fetch(`${API}/files/${fileId}/chunk/${i}`, {credentials: "same-origin"});
+      if (r.status === 404) { stop = true; return; }
+      if (!r.ok) throw new Error("Chunk fetch failed");
+      results[i] = new Uint8Array(await r.arrayBuffer());
     }
-    leftover = merged.subarray(pos);
   }
-  if (!chunked && leftover.length) {
-    // legacy format: whole buffer is [IV(12)][ct]
-    const iv = leftover.subarray(0, 12);
-    const ct = leftover.subarray(12);
-    const plain = new Uint8Array(await crypto.subtle.decrypt({name:"AES-GCM", iv}, key, ct));
-    await onPlain(plain);
-  }
+  await Promise.all(Array.from({length: CONC}, worker));
+  let n = 0; for (const c of results) if (c) n += c.length;
+  const out = new Uint8Array(n); let o = 0;
+  for (const c of results) if (c) { out.set(c, o); o += c.length; }
+  return out;
 }
 
-async function playViaBlob(content, ext, isAudio, mime, key, reader, total) {
-  const parts = [];
-  await streamDecryptRecords(reader, key, (p) => parts.push(p));
-  const blob = new Blob(parts, {type: mime});
+async function playViaBlob(content, ext, isAudio, mime, plain) {
+  const blob = new Blob([plain], {type: mime});
   const url = URL.createObjectURL(blob);
   const media = document.createElement(isAudio ? "audio" : "video");
   media.controls = true;
@@ -836,10 +792,10 @@ async function playViaBlob(content, ext, isAudio, mime, key, reader, total) {
   else { media.style.maxWidth = "100%"; media.style.maxHeight = "80vh"; media.style.display = "block"; media.style.margin = "auto"; }
   content.innerHTML = "";
   content.appendChild(media);
-  if (total > 800 * 1024 * 1024) {
+  if (plain.length > 800 * 1024 * 1024) {
     const note = document.createElement("div");
     note.style.cssText = "text-align:center;color:var(--muted);font-size:11px;padding:6px";
-    note.textContent = `Large file (${fmt(total)}): decrypted in-browser, so it needs enough RAM to play. If playback fails, use Download instead.`;
+    note.textContent = `Large file (${fmt(plain.length)}): decrypted in-browser, so it needs enough RAM to play. If playback fails, use Download instead.`;
     content.appendChild(note);
   }
   media.src = url;

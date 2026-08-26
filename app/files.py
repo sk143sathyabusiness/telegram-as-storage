@@ -472,6 +472,49 @@ def api_files_download(file_id):
     return resp
 
 
+@files_bp.route("/api/files/<uuid:file_id>/chunk/<int:index>", methods=["GET"])
+@login_required
+def api_files_chunk_download(file_id, index):
+    """Stream ONE stored chunk (Telegram message) by index. Lets the client fetch
+    chunks with many small requests instead of one 60s-bounded stream — so large
+    files download reliably on serverless (same chunked model as upload)."""
+    sup = get_supabase()
+    user = current_user()
+    err = _require_active_org(sup, user["org_id"])
+    if err:
+        return err
+    file_result = sup.table("files").select("id, name, org_id, folder_id").eq("id", file_id).execute()
+    if not file_result.data:
+        return jsonify({"error": "File not found"}), 404
+    fdata = file_result.data[0]
+    if fdata["org_id"] != user["org_id"]:
+        return jsonify({"error": "Permission denied"}), 403
+    perm = _check_permission(sup, user["id"], user["org_id"], fdata.get("folder_id"))
+    if not perm:
+        return jsonify({"error": "Permission denied"}), 403
+    ver_result = sup.table("file_versions").select("*").eq("file_id", file_id).eq("is_current", True).execute()
+    if not ver_result.data:
+        return jsonify({"error": "No current version"}), 404
+    ver = ver_result.data[0]
+    message_ids = _parse_message_ids(ver["message_ids"])
+    if index < 0 or index >= len(message_ids):
+        return jsonify({"error": "No such chunk"}), 404
+    if not _tg_configured():
+        return jsonify({"error": "Telegram not configured"}), 500
+    org = sup.table("organizations").select("telegram_chat_id").eq("id", fdata["org_id"]).maybe_single().execute()
+    chat_id = int(org.data["telegram_chat_id"]) if org and org.data and org.data.get("telegram_chat_id") else None
+    if not chat_id:
+        return jsonify({"error": "No Telegram chat_id configured"}), 500
+
+    def generate():
+        for chunk in telegram_service.download_chunks_streaming(chat_id, [message_ids[index]]):
+            yield chunk
+
+    resp = Response(stream_with_context(generate()), mimetype="application/octet-stream")
+    resp.headers["Content-Disposition"] = f'inline; filename="{fdata["name"]}.part{index}"'
+    return resp
+
+
 @files_bp.route("/api/files/<uuid:file_id>/preview", methods=["GET"])
 @login_required
 def api_files_preview(file_id):
