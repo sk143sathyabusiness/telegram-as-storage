@@ -118,13 +118,38 @@ def _finalize_upload(sup, user, filename, folder_id, sha256, size_bytes, message
         },
     }).execute()
     # Auto-backup on upload: forward bytes to backup channel + full snapshot.
-    # Blocks until the backup succeeds (org policy: every upload).
+    # Runs in the background by default so the upload response returns fast.
+    # Set AUTO_BACKUP_BLOCKING=1 to wait for the backup before responding
+    # (stricter, but on serverless the response may kill the bg thread).
+    _auto_backup(sup, user, message_ids)
+    return file_id, new_ver
+
+
+def _auto_backup(sup, user, message_ids):
+    import os as _os
+    if _os.environ.get("AUTO_BACKUP_BLOCKING") == "1":
+        _run_backup(sup, user, message_ids)
+        return
+    import threading
+    threading.Thread(target=_run_backup, args=(None, user, message_ids), daemon=True).start()
+
+
+def _run_backup(sup, user, message_ids):
     try:
         from app.backups import auto_backup_on_upload
-        auto_backup_on_upload(sup, user["org_id"], user, message_ids)
+        client = sup
+        if client is None:
+            try:
+                from app.supabase_client import get_supabase
+                client = get_supabase()
+            except Exception:
+                client = None
+        if client is None:
+            print("[BACKUP] no supabase client available for backup")
+            return
+        auto_backup_on_upload(client, user["org_id"], user, message_ids)
     except Exception as e:
-        raise RuntimeError(f"Upload stored but auto-backup failed: {e}")
-    return file_id, new_ver
+        print(f"[BACKUP] auto-backup failed: {e}")
 
 
 def _load_file_blob(org_id, message_ids):

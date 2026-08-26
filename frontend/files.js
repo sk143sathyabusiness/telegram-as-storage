@@ -3,9 +3,12 @@ import { API, state, toast, fmt, fmtDate, fmtSpeed, escapeHtml, openModal, close
 
 function fmtEta(sec) {
   if (!isFinite(sec) || sec < 0) return "—";
-  const m = Math.floor(sec / 60);
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
   const s = Math.round(sec % 60);
-  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+  if (sec < 60) return `${s}s`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m ${s}s`;
 }
 
 // ── ENCRYPTION (behind the screen) ──────────────────────────────────────
@@ -143,7 +146,7 @@ async function uploadFileChunked(file, passphrase) {
   const folderId = state.currentFolderId || "";
   const total = Math.max(1, Math.ceil(file.size / UPLOAD_CHUNK_BYTES));
   const messageIds = new Array(total);
-  const CONC = 3; // parallel chunk uploads (bounded: Telethon shares one session)
+  const CONC = 6; // parallel chunk uploads (bounded: Telegram allows multiple sessions per auth key)
   const div = document.createElement("div");
   div.className = "upload-item";
   const pid = "p_" + Math.random().toString(36).slice(2);

@@ -54,6 +54,10 @@ except Exception:
 # Concurrent chunk uploads (1 = sequential, 2-3 = faster for very large files)
 CONCURRENT_CHUNKS = int(os.environ.get("CONCURRENT_CHUNKS", 1))
 
+# Parallel MTProto connections used per chunk by FastTelethon (vendored parallel_file_transfer).
+# Forces several parallel part-transfers even for small chunks. Tune down if FloodWait hits.
+TG_TRANSFER_WORKERS = int(os.environ.get("TG_TRANSFER_WORKERS", 4))
+
 
 def is_configured() -> bool:
     """Check if Telegram credentials are present (never log the hash)."""
@@ -130,19 +134,30 @@ async def _resolve_entity(client, channel_id):
 
 
 async def _upload_single_chunk(client, entity, chunk_bytes, chunk_index, total_chunks, remote_name):
-    """Upload a single chunk to Telegram. Returns message ID."""
-    buf = io.BytesIO(chunk_bytes)
+    """Upload a single chunk to Telegram. Returns message ID.
+
+    Uses the vendored FastTelethon parallel part-transferrer for speed; falls back to
+    Telethon's stock send_file if the parallel path raises (e.g. private-API drift).
+    """
     if total_chunks > 1:
-        buf.name = f"{remote_name}.part{chunk_index + 1}_of_{total_chunks}"
+        name = f"{remote_name}.part{chunk_index + 1}_of_{total_chunks}"
     else:
-        buf.name = remote_name
-    msg: Message = await client.send_file(
-        entity,
-        buf,
-        caption=buf.name,
-        force_document=True,
-    )
-    buf.close()
+        name = remote_name
+    buf = io.BytesIO(chunk_bytes)
+    buf.name = name
+    try:
+        from fast_telethon import upload_file as ft_upload_file
+        input_file = await ft_upload_file(
+            client, buf, file_size=len(chunk_bytes), connection_count=TG_TRANSFER_WORKERS,
+        )
+        input_file.name = name
+        msg: Message = await client.send_file(entity, input_file, caption=name, force_document=True)
+    except Exception as e:
+        print(f"[TG] parallel upload failed (chunk {chunk_index}), falling back to send_file: {e}")
+        buf.seek(0)
+        msg: Message = await client.send_file(entity, buf, caption=name, force_document=True)
+    finally:
+        buf.close()
     return msg.id
 
 
@@ -318,7 +333,15 @@ async def _download_chunks_async(
         for i, msg_id in enumerate(message_ids):
             msg = await client.get_messages(entity, ids=msg_id)
             chunk_buf = io.BytesIO()
-            await client.download_media(msg, file=chunk_buf, progress_callback=progress_callback)
+            try:
+                from fast_telethon import download_file as ft_download_file
+                await ft_download_file(client, msg.document, chunk_buf,
+                                       connection_count=TG_TRANSFER_WORKERS, progress_callback=progress_callback)
+            except Exception as e:
+                print(f"[TG] parallel download failed (chunk {i}), falling back to download_media: {e}")
+                chunk_buf.seek(0)
+                chunk_buf.truncate(0)
+                await client.download_media(msg, file=chunk_buf, progress_callback=progress_callback)
             assembled.write(chunk_buf.getvalue())
             print(f"[TG] Chunk {i + 1}/{len(message_ids)} downloaded")
             chunk_buf.close()
@@ -361,7 +384,15 @@ async def _download_chunks_streaming_async(channel_id, message_ids, progress_cal
             print(f"[TG] Downloading chunk {i + 1}/{len(message_ids)} (msg_id={msg_id})...")
             msg = await client.get_messages(entity, ids=msg_id)
             chunk_buf = io.BytesIO()
-            await client.download_media(msg, file=chunk_buf, progress_callback=progress_callback)
+            try:
+                from fast_telethon import download_file as ft_download_file
+                await ft_download_file(client, msg.document, chunk_buf,
+                                       connection_count=TG_TRANSFER_WORKERS, progress_callback=progress_callback)
+            except Exception as e:
+                print(f"[TG] parallel download failed (chunk {i}), falling back to download_media: {e}")
+                chunk_buf.seek(0)
+                chunk_buf.truncate(0)
+                await client.download_media(msg, file=chunk_buf, progress_callback=progress_callback)
             data = chunk_buf.getvalue()
             print(f"[TG] Chunk {i + 1} downloaded ({len(data)} bytes)")
             yield data

@@ -517,6 +517,7 @@ def test_upload_triggers_auto_backup(monkeypatch):
     monkeypatch.setattr(files_mod, "_require_active_org", lambda *a, **k: None)
     monkeypatch.setattr(files_mod, "_check_permission", lambda *a, **k: "read_write")
     monkeypatch.setattr(files_mod.telegram_service, "upload_chunks_streaming", lambda *a, **k: [5])
+    monkeypatch.setenv("AUTO_BACKUP_BLOCKING", "1")
     monkeypatch.setattr(backups_mod.telegram_service, "is_configured", lambda: True)
     monkeypatch.setattr(backups_mod.telegram_service, "backup_essential_folder", lambda *a, **k: [1])
     monkeypatch.setattr(backups_mod.telegram_service, "upload_chunks", lambda *a, **k: [9])
@@ -545,6 +546,7 @@ def test_chunked_upload_commit(monkeypatch):
     monkeypatch.setattr(files_mod, "_require_active_org", lambda *a, **k: None)
     monkeypatch.setattr(files_mod, "_check_permission", lambda *a, **k: "read_write")
     monkeypatch.setattr(files_mod.telegram_service, "upload_chunks_streaming", lambda *a, **k: [77])
+    monkeypatch.setenv("AUTO_BACKUP_BLOCKING", "1")
     monkeypatch.setattr(backups_mod.telegram_service, "is_configured", lambda: True)
     monkeypatch.setattr(backups_mod.telegram_service, "backup_essential_folder", lambda *a, **k: [1])
     monkeypatch.setattr(backups_mod.telegram_service, "upload_chunks", lambda *a, **k: [9])
@@ -567,3 +569,17 @@ def test_chunked_upload_commit(monkeypatch):
     fv = [d for d in fake.store.get("file_versions", []) if d.get("message_ids") == [77]]
     assert fv, "file_versions not inserted with the chunked message_ids"
     assert called.get("hit") is True, "auto_backup_on_upload was not triggered by chunked commit"
+
+
+def test_fast_telethon_integration_contract():
+    """Vendored FastTelethon must expose the patched API telegram_service relies on."""
+    import inspect
+    import fast_telethon
+    import telegram_service as ts
+    up = inspect.signature(fast_telethon.upload_file)
+    assert "connection_count" in up.parameters, "upload_file must accept connection_count"
+    assert "file_size" in up.parameters, "upload_file must accept explicit file_size (in-memory)"
+    assert "progress_callback" in up.parameters
+    down = inspect.signature(fast_telethon.download_file)
+    assert "connection_count" in down.parameters, "download_file must accept connection_count"
+    assert ts.TG_TRANSFER_WORKERS >= 1, "parallel worker count must be >= 1"
