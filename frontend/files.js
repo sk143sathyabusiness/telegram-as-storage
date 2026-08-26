@@ -39,6 +39,50 @@ export async function sha256Hex(blob) {
   return Array.from(new Uint8Array(h)).map(b => b.toString(16).padStart(2,"0")).join("");
 }
 
+// ── CHUNKED UPLOAD WIRE FORMAT ───────────────────────────────────────────────
+// Each client chunk is encrypted as its own AES-GCM record: [uint32 BE len][12 IV][ct].
+// The FIRST chunk is prefixed with a 16-byte magic so the client can distinguish
+// new per-chunk files from legacy single-IV files WITHOUT any DB column change.
+// (Legacy files begin with a random 12-byte IV, which will never equal this constant.)
+export const CHUNKED_MAGIC = new Uint8Array([0x54,0x56,0x43,0x48,0x4e,0x4b,0x30,0x31, 0,0,0,0,0,0,0,0]); // "TVCHNK01" + 8 zero bytes
+const UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024; // 4 MB — stays under Vercel's ~4.5 MB request limit
+
+function _u32be(n) {
+  return new Uint8Array([(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255]);
+}
+function _readU32be(buf, off) {
+  return (buf[off] << 24) | (buf[off + 1] << 16) | (buf[off + 2] << 8) | buf[off + 3];
+}
+
+// Decrypt a fully-assembled encrypted blob (Uint8Array) into plaintext bytes.
+// Supports legacy (single IV at offset 0) and chunked (magic + length-prefixed) formats.
+export async function decryptAssembled(ct, passphrase) {
+  const key = await deriveKey(passphrase);
+  const isChunked = ct.length >= 16 && ct.slice(0, 16).every((b, i) => b === CHUNKED_MAGIC[i]);
+  if (isChunked) {
+    const parts = [];
+    let pos = 16;
+    while (pos + 4 <= ct.length) {
+      const len = _readU32be(ct, pos);
+      pos += 4;
+      if (pos + len > ct.length) break;
+      const rec = ct.slice(pos, pos + len);
+      pos += len;
+      const iv = rec.slice(0, 12);
+      const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, rec.slice(12));
+      parts.push(new Uint8Array(plain));
+    }
+    let total = parts.reduce((a, p) => a + p.length, 0);
+    const out = new Uint8Array(total);
+    let o = 0;
+    for (const p of parts) { out.set(p, o); o += p.length; }
+    return out;
+  }
+  const iv = ct.slice(0, 12);
+  const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct.slice(12));
+  return new Uint8Array(plain);
+}
+
 // ── UPLOAD ──────────────────────────────────────────────────────────────────
 export async function uploadFiles(triggerEl) {
   const passphrase = getAutoPassphrase();
@@ -64,43 +108,13 @@ export async function uploadFiles(triggerEl) {
   area.classList.add("visible");
   itemsEl.innerHTML = "";
 
-  let totalBytes = 0, sentBytes = 0, okCount = 0, errCount = 0;
-  const prepared = [];
-  for (const file of files) {
-    let srcBlob;
-    try {
-      // Read the File into memory immediately. If we deferred this, the browser
-      // can revoke the OS file handle (e.g. file moved/locked/cloud-synced) and
-      // throw NotReadableError mid-upload. Reading once, up front, avoids that.
-      const buf = await file.arrayBuffer();
-      srcBlob = new Blob([buf], { type: file.type || "application/octet-stream" });
-    } catch (e) {
-      errCount++;
-      toast(`Cannot read "${file.name}": ${e.message}`, "err");
-      continue;
-    }
-    const encrypted = await encryptFile(srcBlob, passphrase);
-    prepared.push({ file, encrypted });
-    totalBytes += encrypted.size;
-  }
-  const t0 = Date.now();
-
-  const results = await Promise.allSettled(prepared.map(({ file, encrypted }) =>
-    uploadOne(file, encrypted, d => {
-      sentBytes += d;
-      const elapsed = (Date.now() - t0) / 1000;
-      const speed = sentBytes / Math.max(elapsed, .01);
-      const eta = Math.round((totalBytes - sentBytes) / Math.max(speed, 1));
-      document.getElementById("overall-eta").textContent =
-        `${fmt(sentBytes)} / ${fmt(totalBytes)}  —  ETA ${eta}s`;
-    })
-  ));
+  let okCount = 0, errCount = 0;
   const errDetails = [];
-  results.forEach(r => {
-    if (r.status === "fulfilled") okCount++;
-    else { errCount++; if (r.reason?.message) errDetails.push(r.reason.message); console.error("[UPLOAD] failed:", r.reason.message); }
-  });
-
+  for (const file of files) {
+    const res = await uploadFileChunked(file, passphrase);
+    if (res.ok) okCount++;
+    else { errCount++; if (res.error) errDetails.push(res.error); }
+  }
   area.classList.remove("visible");
   usedInput.value = "";
   refreshFiles();
@@ -111,50 +125,107 @@ export async function uploadFiles(triggerEl) {
 }
 export const uploadFile = uploadFiles; // alias per brief
 
-async function uploadOne(file, encBlob, onProgress) {
-    const sha256 = await sha256Hex(encBlob);
-    const div = document.createElement("div");
-    div.className = "upload-item";
-    const pid = "p_" + Math.random().toString(36).slice(2);
-    const eid = "e_" + Math.random().toString(36).slice(2);
-    div.innerHTML = `<div class="upload-item-name">${escapeHtml(file.name)} <span class="file-size" style="color:var(--muted);font-size:11px">${fmt(encBlob.size)}</span></div>
-      <div class="pbar"><div class="pbar-fill" id="${pid}"></div></div>
-      <div class="upload-eta" id="${eid}"></div>`;
-    document.getElementById("upload-items").appendChild(div);
-
-    return new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      const t0 = Date.now();
-      let lastLoaded = 0;
-      xhr.upload.onprogress = e => {
-        const d = e.loaded - lastLoaded; lastLoaded = e.loaded;
-        onProgress(d);
-        const pct = Math.round(e.loaded / e.total * 100);
-        const pidEl = document.getElementById(pid);
-        if (pidEl) pidEl.style.width = pct + "%";
-        const elapsed = (Date.now() - t0) / 1000;
-        const speed = e.loaded / Math.max(elapsed, .01);
-        const eta = Math.round((e.total - e.loaded) / Math.max(speed, 1));
-        const eidEl = document.getElementById(eid);
-        if (eidEl) eidEl.textContent = `${pct}% · ${fmtSpeed(speed)} · ETA ${eta}s`;
-      };
-      xhr.onload = () => {
-        if (xhr.status >= 200 && xhr.status < 300) resolve();
-        else {
-          let msg = `HTTP ${xhr.status}`;
-          try { const d = JSON.parse(xhr.responseText); if (d.error) msg = d.error; } catch {}
-          reject(new Error(msg));
-        }
-      };
-      xhr.onerror = () => reject(new Error("Network error"));
-      xhr.open("POST", API + "/files/upload");
-      const fd = new FormData();
-      fd.append("file", encBlob, file.name);
-      fd.append("filename", file.name);
-      fd.append("folder_id", state.currentFolderId || "");
-      fd.append("sha256", sha256);
-      xhr.send(fd);
+// Upload one file as 4 MB encrypted chunks. Reads each slice on demand (never the
+// whole file at once → no browser OOM) and POSTs each chunk to /api/files/chunk,
+// then commits the ordered message_ids. Keeps every HTTP request small so large
+// files (movies) work on Vercel serverless.
+async function uploadFileChunked(file, passphrase) {
+  const key = await deriveKey(passphrase);
+  const folderId = state.currentFolderId || "";
+  const total = Math.max(1, Math.ceil(file.size / UPLOAD_CHUNK_BYTES));
+  const messageIds = [];
+  let acc = new Uint8Array(0);
+  const div = document.createElement("div");
+  div.className = "upload-item";
+  const pid = "p_" + Math.random().toString(36).slice(2);
+  const eid = "e_" + Math.random().toString(36).slice(2);
+  div.innerHTML = `<div class="upload-item-name">${escapeHtml(file.name)} <span class="file-size" style="color:var(--muted);font-size:11px">${fmt(file.size)}</span></div>
+    <div class="pbar"><div class="pbar-fill" id="${pid}"></div></div>
+    <div class="upload-eta" id="${eid}"></div>`;
+  document.getElementById("upload-items").appendChild(div);
+  const t0 = Date.now();
+  try {
+    for (let idx = 0, start = 0; start < file.size || (file.size === 0 && idx === 0); start += UPLOAD_CHUNK_BYTES, idx++) {
+      const slice = file.slice(start, Math.min(start + UPLOAD_CHUNK_BYTES, file.size));
+      const buf = await slice.arrayBuffer();
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, buf));
+      const recBody = new Uint8Array(4 + 12 + ct.length);
+      recBody.set(_u32be(12 + ct.length), 0);
+      recBody.set(iv, 4);
+      recBody.set(ct, 16);
+      let rec;
+      if (idx === 0) {
+        rec = new Uint8Array(16 + recBody.length);
+        rec.set(CHUNKED_MAGIC, 0);
+        rec.set(recBody, 16);
+      } else {
+        rec = recBody;
+      }
+      // incremental sha256 fold over the encrypted records (no full-file buffering)
+      const fold = new Uint8Array(acc.length + rec.length);
+      fold.set(acc, 0); fold.set(rec, acc.length);
+      acc = new Uint8Array(await crypto.subtle.digest("SHA-256", fold));
+      const recBlob = new Blob([rec]);
+      const r = await _xhrPost(`${API}/files/chunk`, fd => {
+        fd.append("chunk", recBlob, file.name);
+        fd.append("filename", file.name);
+        fd.append("folder_id", folderId);
+        fd.append("index", String(idx));
+        fd.append("total", String(total));
+      });
+      if (!r.ok) throw new Error(r.error || `chunk ${idx} failed (HTTP ${r.status})`);
+      messageIds.push(r.message_id);
+      const pct = Math.round(((idx + 1) / total) * 100);
+      const pidEl = document.getElementById(pid); if (pidEl) pidEl.style.width = pct + "%";
+      const elapsed = (Date.now() - t0) / 1000;
+      const speed = recBlob.size / Math.max(elapsed, .01);
+      const eta = Math.round(((total - (idx + 1)) * recBlob.size) / Math.max(speed, 1));
+      const eidEl = document.getElementById(eid); if (eidEl) eidEl.textContent = `${pct}% · ${fmtSpeed(speed)} · ETA ${eta}s`;
+    }
+    const sha256 = Array.from(acc).map(b => b.toString(16).padStart(2, "0")).join("");
+    const c = await _xhrPostJSON(`${API}/files/commit`, {
+      filename: file.name, folder_id: folderId, sha256, total_size: file.size, message_ids: messageIds,
     });
+    if (!c.ok) throw new Error(c.error || "commit failed");
+    return { ok: true };
+  } catch (e) {
+    const eidEl = document.getElementById(eid); if (eidEl) eidEl.textContent = "Failed";
+    return { ok: false, error: e.message };
+  }
+}
+
+function _xhrPost(url, buildForm) {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    const fd = new FormData();
+    buildForm(fd);
+    xhr.onload = () => {
+      let d = {};
+      try { d = JSON.parse(xhr.responseText); } catch {}
+      if (xhr.status >= 200 && xhr.status < 300) resolve({ ok: true, message_id: d.message_id, status: xhr.status });
+      else resolve({ ok: false, error: d.error || `HTTP ${xhr.status}`, status: xhr.status });
+    };
+    xhr.onerror = () => resolve({ ok: false, error: "Network error" });
+    xhr.send(fd);
+  });
+}
+
+function _xhrPostJSON(url, json) {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    xhr.setRequestHeader("Content-Type", "application/json");
+    xhr.onload = () => {
+      let d = {};
+      try { d = JSON.parse(xhr.responseText); } catch {}
+      if (xhr.status >= 200 && xhr.status < 300) resolve({ ok: true, ...d, status: xhr.status });
+      else resolve({ ok: false, error: d.error || `HTTP ${xhr.status}`, status: xhr.status });
+    };
+    xhr.onerror = () => resolve({ ok: false, error: "Network error" });
+    xhr.send(JSON.stringify(json));
+  });
 }
 
 // ── FILE LIST / SEARCH ──────────────────────────────────────────────────────
@@ -236,10 +307,8 @@ async function processThumbQueue() {
     if (!r.ok) throw new Error();
     const buf = await r.arrayBuffer();
     const ct = new Uint8Array(buf);
-    const iv = ct.slice(0, 12);
-    const key = await deriveKey(passphrase);
     let plain;
-    try { plain = await crypto.subtle.decrypt({ name:"AES-GCM", iv }, key, ct.slice(12)); } catch { return; }
+    try { plain = await decryptAssembled(ct, passphrase); } catch { return; }
     const mime = getMimeForExt(ext);
     const blob = new Blob([plain], {type: mime});
     const url = URL.createObjectURL(blob);
@@ -388,11 +457,9 @@ export async function downloadFile(fileId, filename) {
   const ct = new Uint8Array(received);
   let off = 0;
   for (const c of chunks) { ct.set(c, off); off += c.length; }
-  const iv = ct.slice(0, 12);
-  const key = await deriveKey(passphrase);
   let plain;
   try {
-    plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct.slice(12));
+    plain = await decryptAssembled(ct, passphrase);
   } catch {
     toast("Decryption failed", "err"); return;
   }
@@ -569,10 +636,8 @@ function loadPreviewAsBlob(container, htmlTemplate) {
     return r.arrayBuffer();
   }).then(async buf => {
     const ct = new Uint8Array(buf);
-    const iv = ct.slice(0, 12);
-    const key = await deriveKey(passphrase);
     let plain;
-    try { plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct.slice(12)); }
+    try { plain = await decryptAssembled(ct, passphrase); }
     catch { container.innerHTML = `<div style="text-align:center;padding:40px;color:var(--danger)">Decryption failed</div>`; return; }
     const ext = _previewFilename.split(".").pop().toLowerCase();
     const mime = getMimeForExt(ext);
@@ -610,10 +675,8 @@ container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--mu
     return r.arrayBuffer();
   }).then(async buf => {
     const ct = new Uint8Array(buf);
-    const iv = ct.slice(0, 12);
-    const key = await deriveKey(passphrase);
     let plain;
-    try { plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct.slice(12)); }
+    try { plain = await decryptAssembled(ct, passphrase); }
     catch { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Decryption failed</div>'; return; }
     const text = new TextDecoder().decode(plain);
     container.innerHTML = `<pre style="margin:0;padding:16px;font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:break-word;color:var(--text);overflow:auto;max-height:65vh">${escapeHtml(text)}</pre>`;
@@ -630,9 +693,8 @@ if (typeof mammoth === "undefined") { container.innerHTML = '<div style="text-al
     const r = await fetch(`${API}/files/${_previewFileId}/preview`);
     if (!r.ok) throw new Error("Preview failed");
     const buf = await r.arrayBuffer();
-    const ct = new Uint8Array(buf); const iv = ct.slice(0, 12);
-    const key = await deriveKey(passphrase);
-    let plain; try { plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct.slice(12)); } catch { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Decryption failed</div>'; return; }
+    const ct = new Uint8Array(buf);
+    let plain; try { plain = await decryptAssembled(ct, passphrase); } catch { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Decryption failed</div>'; return; }
     const result = await mammoth.convertToHtml({arrayBuffer: plain});
     const html = result.value || '<p style="color:var(--muted)">Document is empty.</p>';
     const warnings = result.messages.filter(m => m.type === "warning");
@@ -650,9 +712,8 @@ if (typeof XLSX === "undefined") { container.innerHTML = '<div style="text-align
     const r = await fetch(`${API}/files/${_previewFileId}/preview`);
     if (!r.ok) throw new Error("Preview failed");
     const buf = await r.arrayBuffer();
-    const ct = new Uint8Array(buf); const iv = ct.slice(0, 12);
-    const key = await deriveKey(passphrase);
-    let plain; try { plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct.slice(12)); } catch { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Decryption failed</div>'; return; }
+    const ct = new Uint8Array(buf);
+    let plain; try { plain = await decryptAssembled(ct, passphrase); } catch { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Decryption failed</div>'; return; }
     const workbook = XLSX.read(plain, {type: "array"});
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
@@ -677,9 +738,8 @@ if (typeof JSZip === "undefined") { container.innerHTML = '<div style="text-alig
     const r = await fetch(`${API}/files/${_previewFileId}/preview`);
     if (!r.ok) throw new Error("Preview failed");
     const buf = await r.arrayBuffer();
-    const ct = new Uint8Array(buf); const iv = ct.slice(0, 12);
-    const key = await deriveKey(passphrase);
-    let plain; try { plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct.slice(12)); } catch { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Decryption failed</div>'; return; }
+    const ct = new Uint8Array(buf);
+    let plain; try { plain = await decryptAssembled(ct, passphrase); } catch { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Decryption failed</div>'; return; }
     const zip = await JSZip.loadAsync(plain);
     const slideFiles = [];
     zip.forEach((path, file) => { if (path.match(/^ppt\/slides\/slide\d+\.xml$/) && !path.endsWith("/")) slideFiles.push({path, file}); });
@@ -742,9 +802,8 @@ try {
     const r = await fetch(`${API}/files/${fileId}/preview`);
     if (!r.ok) throw new Error("Failed to load");
     const buf = await r.arrayBuffer();
-    const ct = new Uint8Array(buf); const iv = ct.slice(0, 12);
-    const key = await deriveKey(passphrase);
-    const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct.slice(12));
+    const ct = new Uint8Array(buf);
+    const plain = await decryptAssembled(ct, passphrase);
     document.getElementById("edit-textarea").value = new TextDecoder().decode(plain);
   } catch (err) { document.getElementById("edit-textarea").value = `Error loading file: ${err.message}`; }
 }
@@ -776,9 +835,7 @@ if (typeof mammoth === "undefined") { document.getElementById("edit-rich-content
   try {
     const r = await fetch(`${API}/files/${fileId}/preview`);
     if (!r.ok) throw new Error("Failed to load");
-    const buf = await r.arrayBuffer(); const ct = new Uint8Array(buf); const iv = ct.slice(0, 12);
-    const key = await deriveKey(passphrase);
-    let plain; try { plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct.slice(12)); } catch { document.getElementById("edit-rich-content").innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Decryption failed</div>'; return; }
+    const buf = await r.arrayBuffer(); const ct = new Uint8Array(buf);     let plain; try { plain = await decryptAssembled(ct, passphrase); } catch { document.getElementById("edit-rich-content").innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Decryption failed</div>'; return; }
     _editDocxBlob = new Blob([plain]);
     const result = await mammoth.convertToHtml({arrayBuffer: plain});
     const html = result.value || "";

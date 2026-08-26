@@ -66,6 +66,67 @@ def _store_file_blob(f, org_id):
     return message_ids, size_bytes
 
 
+def _resolve_chat_id(sup, org_id):
+    org = sup.table("organizations").select("telegram_chat_id").eq("id", org_id).maybe_single().execute()
+    return int(org.data["telegram_chat_id"]) if org and org.data and org.data.get("telegram_chat_id") else None
+
+
+def _finalize_upload(sup, user, filename, folder_id, sha256, size_bytes, message_ids):
+    """Insert file + new version, write audit log, and run blocking auto-backup.
+    Shared by the legacy single-shot upload and the new chunked upload/commit flow."""
+    existing_query = sup.table("files").select("id").eq("org_id", user["org_id"]).eq("name", filename).eq("is_deleted", False)
+    if folder_id:
+        existing_query = existing_query.eq("folder_id", folder_id)
+    else:
+        existing_query = existing_query.is_("folder_id", "null")
+    existing = existing_query.execute()
+    if existing.data:
+        file_id = existing.data[0]["id"]
+        last = sup.table("file_versions").select("version_number").eq("file_id", file_id).order("version_number", desc=True).limit(1).execute()
+        new_ver = (last.data[0]["version_number"] if last.data else 0) + 1
+        sup.table("file_versions").update({"is_current": False}).eq("file_id", file_id).execute()
+        print(f"[UPLOAD] Existing file updated: file_id={file_id}, new version=v{new_ver}")
+    else:
+        file_result = sup.table("files").insert({
+            "org_id": user["org_id"],
+            "folder_id": folder_id,
+            "name": filename,
+        }).execute()
+        file_id = file_result.data[0]["id"]
+        new_ver = 1
+        print(f"[UPLOAD] New file created: file_id={file_id}, new version=v{new_ver}")
+    sup.table("file_versions").insert({
+        "file_id": file_id,
+        "version_number": new_ver,
+        "size_bytes": size_bytes,
+        "sha256": sha256,
+        "message_ids": message_ids,
+        "uploaded_by": user["id"],
+        "is_current": True,
+    }).execute()
+    folder_name = _resolve_folder_name(sup, folder_id)
+    sup.table("audit_logs").insert({
+        "org_id": user["org_id"],
+        "actor_id": user["id"],
+        "actor_role": user["role"],
+        "action": "upload",
+        "target_type": "file",
+        "target_id": str(file_id),
+        "details": {
+            "target": filename,
+            "detail": f"v{new_ver} · {fmt_size(size_bytes)} · folder={folder_name}",
+        },
+    }).execute()
+    # Auto-backup on upload: forward bytes to backup channel + full snapshot.
+    # Blocks until the backup succeeds (org policy: every upload).
+    try:
+        from app.backups import auto_backup_on_upload
+        auto_backup_on_upload(sup, user["org_id"], user, message_ids)
+    except Exception as e:
+        raise RuntimeError(f"Upload stored but auto-backup failed: {e}")
+    return file_id, new_ver
+
+
 def _load_file_blob(org_id, message_ids):
     """Download encrypted bytes from Telegram chunks."""
     if not _tg_configured():
@@ -195,57 +256,77 @@ def api_files_upload():
             }), 503
         return jsonify({"error": f"Storage failed. {type(e).__name__}: {detail}"}), 500
     print(f"[UPLOAD] Stored to Telegram. message_ids={message_ids}, size={size_bytes}")
-    # Find existing file by name + folder
-    existing_query = sup.table("files").select("id").eq("org_id", user["org_id"]).eq("name", filename).eq("is_deleted", False)
-    if folder_id:
-        existing_query = existing_query.eq("folder_id", folder_id)
-    else:
-        existing_query = existing_query.is_("folder_id", "null")
-    existing = existing_query.execute()
-    if existing.data:
-        file_id = existing.data[0]["id"]
-        last = sup.table("file_versions").select("version_number").eq("file_id", file_id).order("version_number", desc=True).limit(1).execute()
-        new_ver = (last.data[0]["version_number"] if last.data else 0) + 1
-        sup.table("file_versions").update({"is_current": False}).eq("file_id", file_id).execute()
-        print(f"[UPLOAD] Existing file updated: file_id={file_id}, new version=v{new_ver}")
-    else:
-        file_result = sup.table("files").insert({
-            "org_id": user["org_id"],
-            "folder_id": folder_id,
-            "name": filename,
-        }).execute()
-        file_id = file_result.data[0]["id"]
-        new_ver = 1
-        print(f"[UPLOAD] New file created: file_id={file_id}, version=v{new_ver}")
-    sup.table("file_versions").insert({
-        "file_id": file_id,
-        "version_number": new_ver,
-        "size_bytes": size_bytes,
-        "sha256": sha256,
-        "message_ids": message_ids,
-        "uploaded_by": user["id"],
-        "is_current": True,
-    }).execute()
-    folder_name = _resolve_folder_name(sup, folder_id)
-    sup.table("audit_logs").insert({
-        "org_id": user["org_id"],
-        "actor_id": user["id"],
-        "actor_role": user["role"],
-        "action": "upload",
-        "target_type": "file",
-        "target_id": str(file_id),
-        "details": {
-            "target": filename,
-            "detail": f"v{new_ver} · {fmt_size(size_bytes)} · folder={folder_name}",
-        },
-    }).execute()
-    # Auto-backup on upload: forward bytes to backup channel + full snapshot.
-    # Blocks the response until the backup succeeds (org policy: every upload).
     try:
-        from app.backups import auto_backup_on_upload
-        auto_backup_on_upload(sup, user["org_id"], user, message_ids)
+        file_id, new_ver = _finalize_upload(sup, user, filename, folder_id, sha256, size_bytes, message_ids)
     except Exception as e:
-        return jsonify({"error": f"Upload stored but auto-backup failed: {e}"}), 500
+        return jsonify({"error": f"Upload failed: {e}"}), 500
+    return jsonify({"ok": True, "file_id": file_id, "version": new_ver})
+
+
+@files_bp.route("/api/files/chunk", methods=["POST"])
+@login_required
+def api_files_chunk():
+    """Receive one encrypted client chunk and forward it to Telegram as a single
+    message. Stateless — the client tracks ordered message_ids and commits at the end.
+    Keeps each HTTP request tiny so large uploads work on Vercel serverless."""
+    user = current_user()
+    if user["role"] == "read_only":
+        return jsonify({"error": "Permission denied"}), 403
+    chunk = request.files.get("chunk")
+    filename = request.form.get("filename", "unnamed")
+    folder_id = request.form.get("folder_id") or None
+    if not chunk:
+        return jsonify({"error": "No chunk provided"}), 400
+    sup = get_supabase()
+    err = _require_active_org(sup, user["org_id"])
+    if err:
+        return err
+    perm = _check_permission(sup, user["id"], user["org_id"], folder_id)
+    if not perm or perm == "read_only":
+        return jsonify({"error": "Permission denied"}), 403
+    if not _tg_configured():
+        return jsonify({"error": "Telegram not configured — check TG_API_ID and TG_API_HASH"}), 503
+    chat_id = _resolve_chat_id(sup, user["org_id"])
+    if not chat_id:
+        return jsonify({"error": "No Telegram chat_id configured for this organisation"}), 503
+    try:
+        message_ids = telegram_service.upload_chunks_streaming(chunk.stream, filename or "file", chat_id)
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return jsonify({"error": f"Chunk storage failed: {type(e).__name__}: {str(e)[:300]}"}), 500
+    if not message_ids:
+        return jsonify({"error": "Telegram returned no message id for chunk"}), 500
+    print(f"[UPLOAD] chunk stored -> message_id={message_ids[0]}")
+    return jsonify({"ok": True, "message_id": message_ids[0]})
+
+
+@files_bp.route("/api/files/commit", methods=["POST"])
+@login_required
+def api_files_commit():
+    """Finalize a chunked upload: create the file version from the ordered
+    message_ids collected client-side, write audit log, run auto-backup."""
+    user = current_user()
+    if user["role"] == "read_only":
+        return jsonify({"error": "Permission denied"}), 403
+    data = request.get_json(force=True)
+    filename = data.get("filename", "unnamed")
+    folder_id = data.get("folder_id") or None
+    sha256 = data.get("sha256", "")
+    total_size = int(data.get("total_size") or 0)
+    message_ids = data.get("message_ids") or []
+    if not isinstance(message_ids, list) or not message_ids:
+        return jsonify({"error": "No message_ids provided"}), 400
+    sup = get_supabase()
+    err = _require_active_org(sup, user["org_id"])
+    if err:
+        return err
+    perm = _check_permission(sup, user["id"], user["org_id"], folder_id)
+    if not perm or perm == "read_only":
+        return jsonify({"error": "Permission denied"}), 403
+    try:
+        file_id, new_ver = _finalize_upload(sup, user, filename, folder_id, sha256, total_size, message_ids)
+    except Exception as e:
+        return jsonify({"error": f"Commit failed: {e}"}), 500
     return jsonify({"ok": True, "file_id": file_id, "version": new_ver})
 
 

@@ -531,3 +531,39 @@ def test_upload_triggers_auto_backup(monkeypatch):
                    content_type="multipart/form-data")
     assert r.status_code == 200, r.get_json()
     assert called.get("hit") is True, "auto_backup_on_upload was not triggered by upload"
+
+
+def test_chunked_upload_commit(monkeypatch):
+    from app import create_app, files as files_mod, backups as backups_mod
+    app = create_app()
+    fake = _FakeSupabase()
+    oid = str(uuid.uuid4())
+    org = {"id": oid, "name": "A", "telegram_chat_id": "-1001", "backup_channel_id": "-1002", "status": "active"}
+    fake.store["_q_organizations"] = [dict(org), dict(org)]
+    monkeypatch.setattr(files_mod, "get_supabase", lambda: fake)
+    monkeypatch.setattr(files_mod, "log_action", lambda *a, **k: None)
+    monkeypatch.setattr(files_mod, "_require_active_org", lambda *a, **k: None)
+    monkeypatch.setattr(files_mod, "_check_permission", lambda *a, **k: "read_write")
+    monkeypatch.setattr(files_mod.telegram_service, "upload_chunks_streaming", lambda *a, **k: [77])
+    monkeypatch.setattr(backups_mod.telegram_service, "is_configured", lambda: True)
+    monkeypatch.setattr(backups_mod.telegram_service, "backup_essential_folder", lambda *a, **k: [1])
+    monkeypatch.setattr(backups_mod.telegram_service, "upload_chunks", lambda *a, **k: [9])
+    called = {}
+    orig = backups_mod.auto_backup_on_upload
+    monkeypatch.setattr(backups_mod, "auto_backup_on_upload", lambda s, o, u, m: called.setdefault("hit", True) or orig(s, o, u, m))
+    import io
+    with app.test_client() as c:
+        _login_session(c, role="org_admin", org_id=oid)
+        r1 = c.post("/api/files/chunk",
+                    data={"chunk": (io.BytesIO(b"encchunk"), "doc.txt"), "filename": "doc.txt", "folder_id": ""},
+                    content_type="multipart/form-data")
+        assert r1.status_code == 200, r1.get_json()
+        assert r1.get_json().get("message_id") == 77, r1.get_json()
+        r2 = c.post("/api/files/commit", json={
+            "filename": "doc.txt", "folder_id": None, "sha256": "abc",
+            "total_size": 8, "message_ids": [77],
+        })
+        assert r2.status_code == 200, r2.get_json()
+    fv = [d for d in fake.store.get("file_versions", []) if d.get("message_ids") == [77]]
+    assert fv, "file_versions not inserted with the chunked message_ids"
+    assert called.get("hit") is True, "auto_backup_on_upload was not triggered by chunked commit"
