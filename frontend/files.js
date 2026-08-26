@@ -60,22 +60,24 @@ export async function decryptAssembled(ct, passphrase) {
   const key = await deriveKey(passphrase);
   const isChunked = ct.length >= 16 && ct.slice(0, 16).every((b, i) => b === CHUNKED_MAGIC[i]);
   if (isChunked) {
-    const parts = [];
+    const records = [];
     let pos = 16;
     while (pos + 4 <= ct.length) {
       const len = _readU32be(ct, pos);
       pos += 4;
       if (pos + len > ct.length) break;
-      const rec = ct.slice(pos, pos + len);
+      records.push(ct.slice(pos, pos + len));
       pos += len;
-      const iv = rec.slice(0, 12);
-      const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, rec.slice(12));
-      parts.push(new Uint8Array(plain));
     }
-    let total = parts.reduce((a, p) => a + p.length, 0);
+    // decrypt all chunks concurrently (CPU-bound work runs in parallel)
+    const plains = await Promise.all(records.map(rec => {
+      const iv = rec.slice(0, 12);
+      return crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, rec.slice(12)).then(p => new Uint8Array(p));
+    }));
+    let total = plains.reduce((a, p) => a + p.length, 0);
     const out = new Uint8Array(total);
     let o = 0;
-    for (const p of parts) { out.set(p, o); o += p.length; }
+    for (const p of plains) { out.set(p, o); o += p.length; }
     return out;
   }
   const iv = ct.slice(0, 12);
@@ -133,8 +135,8 @@ async function uploadFileChunked(file, passphrase) {
   const key = await deriveKey(passphrase);
   const folderId = state.currentFolderId || "";
   const total = Math.max(1, Math.ceil(file.size / UPLOAD_CHUNK_BYTES));
-  const messageIds = [];
-  let acc = new Uint8Array(0);
+  const messageIds = new Array(total);
+  const CONC = 3; // parallel chunk uploads (bounded: Telethon shares one session)
   const div = document.createElement("div");
   div.className = "upload-item";
   const pid = "p_" + Math.random().toString(36).slice(2);
