@@ -252,6 +252,69 @@ def api_shared_preview(token):
     return resp
 
 
+@sharing_bp.route("/api/shared/<token>/chunk/<int:index>", methods=["GET"])
+def api_shared_chunk(token, index):
+    """Stream a single stored chunk (one Telegram message) of a shared file.
+
+    Mirrors /api/files/<id>/chunk/<index>: many small per-chunk requests avoid a
+    single 60s-bounded stream so large shared files download reliably on serverless.
+    """
+    sup = get_supabase()
+    link = sup.table("shared_links").select("*, files(name, org_id, folder_id)").eq("token", token).maybe_single().execute()
+    if not link or not link.data:
+        return jsonify({"error": "Link not found or expired"}), 404
+    link_data = link.data
+    if link_data.get("expires_at"):
+        from datetime import datetime as dt
+        exp = dt.fromisoformat(link_data["expires_at"].replace("Z", "+00:00")) if "T" in link_data["expires_at"] else dt.strptime(link_data["expires_at"][:19], "%Y-%m-%dT%H:%M:%S")
+        if dt.utcnow() > exp:
+            return jsonify({"error": "Link has expired"}), 410
+    pw_hash = link_data.get("password_hash")
+    if pw_hash:
+        provided = request.args.get("password", "")
+        if not verify_share_password(provided, pw_hash):
+            return jsonify({"error": "Password required", "password_required": True}), 401
+    fdata = link_data.get("files", {})
+    file_id = link_data["file_id"]
+    org_id = fdata.get("org_id")
+    ver_result = sup.table("file_versions").select("message_ids, size_bytes").eq("file_id", file_id).eq("is_current", True).execute()
+    if not ver_result.data:
+        return jsonify({"error": "No current version"}), 404
+    ver = ver_result.data[0]
+    message_ids = _parse_message_ids(ver["message_ids"])
+    if index < 0 or index >= len(message_ids):
+        return jsonify({"error": "No such chunk"}), 404
+    if index == 0:
+        sup.table("shared_links").update({"download_count": (link_data.get("download_count") or 0) + 1}).eq("id", link_data["id"]).execute()
+    if not _tg_configured():
+        return jsonify({"error": "Telegram not configured"}), 503
+    try:
+        telegram_service._make_client()
+    except RuntimeError as e:
+        return jsonify({"error": str(e), "type": "RuntimeError"}), 503
+    except Exception as e:
+        if "unable to open database file" in str(e).lower():
+            return jsonify({"error": "Telegram session file cannot be opened on Vercel (read-only filesystem). Set TG_SESSION_STRING env var from your local session.session via StringSession and redeploy.", "type": type(e).__name__}), 503
+    org = sup.table("organizations").select("telegram_chat_id").eq("id", org_id).maybe_single().execute()
+    chat_id = int(org.data["telegram_chat_id"]) if org and org.data and org.data.get("telegram_chat_id") else None
+    if not chat_id:
+        return jsonify({"error": "Telegram chat not configured"}), 500
+
+    def generate():
+        try:
+            for chunk in telegram_service.download_chunks_streaming(chat_id, [message_ids[index]]):
+                yield chunk
+        except Exception as e:
+            detail = str(e).split("\n")[0][:400]
+            if "unable to open database file" in detail.lower():
+                detail = "Telegram session file cannot be opened on Vercel (read-only filesystem). Set TG_SESSION_STRING env var."
+            print(f"[SHARED-CHUNK] Streaming failed: {type(e).__name__}: {detail}")
+
+    resp = Response(stream_with_context(generate()), mimetype="application/octet-stream")
+    resp.headers["Content-Disposition"] = f'attachment; filename="chunk-{index}"'
+    return resp
+
+
 @sharing_bp.route("/api/shares", methods=["GET"])
 @login_required
 def api_shares_list():

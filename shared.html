@@ -110,6 +110,55 @@ function getMime(ext) {
   const m = { png:"image/png", jpg:"image/jpeg", jpeg:"image/jpeg", gif:"image/gif", svg:"image/svg+xml", webp:"image/webp", bmp:"image/bmp", pdf:"application/pdf", mp4:"video/mp4", webm:"video/webm", mp3:"audio/mpeg", wav:"audio/wav" };
   return m[ext] || "application/octet-stream";
 }
+const CHUNKED_MAGIC = new TextEncoder().encode("TVCHNK01");
+function _readU32be(buf, off){ return ((buf[off]<<24)|(buf[off+1]<<16)|(buf[off+2]<<8)|buf[off+3])>>>0; }
+function concatBytes(parts){ let n=0; for(const p of parts) n+=p.length; const o=new Uint8Array(n); let off=0; for(const p of parts){o.set(p,off);off+=p.length;} return o; }
+async function decryptAssembled(ct, passphrase){
+  const key = await deriveKey(passphrase);
+  if (ct.length < 16) throw new Error("Empty/corrupt ciphertext");
+  const chunked = ct.subarray(0,16).every((b,i)=>b===CHUNKED_MAGIC[i]);
+  if (!chunked) {
+    const iv = ct.subarray(0,12); const body = ct.subarray(12);
+    return new Uint8Array(await crypto.subtle.decrypt({name:"AES-GCM", iv}, key, body));
+  }
+  const out = []; let pos = 0; let first = true;
+  while (pos < ct.length) {
+    const prefix = first ? 16 : 0;
+    if (ct.length - pos < prefix + 4) throw new Error("Truncated ciphertext");
+    const len = _readU32be(ct, pos + prefix);
+    const recLen = prefix + 4 + len;
+    if (ct.length - pos < recLen) throw new Error("Truncated ciphertext");
+    const iv = ct.subarray(pos + prefix + 4, pos + prefix + 4 + 12);
+    const body = ct.subarray(pos + prefix + 4 + 12, pos + recLen);
+    out.push(new Uint8Array(await crypto.subtle.decrypt({name:"AES-GCM", iv}, key, body)));
+    first = false; pos += recLen;
+  }
+  return concatBytes(out);
+}
+async function fetchAllChunksShared(tok, password, total, onProg){
+  const results = []; let next = 0, stop = false, received = 0; const CONC = 6;
+  async function worker(){
+    while (!stop) {
+      const i = next++;
+      const r = await fetch(`/api/shared/${tok}/chunk/${i}?password=${encodeURIComponent(password || "")}`);
+      if (r.status === 404) { stop = true; return; }
+      if (!r.ok) {
+        let j = {}; try { j = await r.json(); } catch {}
+        if (r.status === 401) throw new Error("Incorrect password");
+        throw new Error(j.error || "Chunk fetch failed");
+      }
+      const buf = new Uint8Array(await r.arrayBuffer());
+      results[i] = buf; received += buf.length;
+      if (total) { const pct = Math.min(99, Math.round(received / total * 100)); onProg(pct, `⬇ ${pct}%`); }
+      else onProg(0, `⬇ ${fmtSize(received)}`);
+    }
+  }
+  await Promise.all(Array.from({length: CONC}, worker));
+  let n = 0; for (const c of results) if (c) n += c.length;
+  const out = new Uint8Array(n); let o = 0;
+  for (const c of results) if (c) { out.set(c, o); o += c.length; }
+  return out;
+}
 async function showDownload(d, password) {
   content.innerHTML = `
     <div class="shared-name">${escapeHtml(d.filename || "Shared file")}</div>
@@ -119,41 +168,22 @@ async function showDownload(d, password) {
     <div id="preview-area" style="display:none;margin-top:18px"></div>
     <button class="btn-primary" id="dl-btn" style="display:none;width:100%;margin-top:12px">⬇ Download</button>`;
   try {
-    const url = `/api/shared/${token}?password=${encodeURIComponent(password || "")}`;
-    const r = await fetch(url);
-    if (!r.ok) {
-      if (r.status === 401) {
-        const j = await r.json().catch(() => ({}));
-        return showPasswordPrompt(d), setErr(j.error || "Incorrect password");
-      }
-      const j = await r.json().catch(() => ({}));
-      if (j.error) {
-        content.innerHTML = `<div class="shared-expired">⚠️</div><div class="shared-name">Error</div><div class="shared-meta" style="color:var(--danger);white-space:pre-wrap">${escapeHtml(j.error)}</div><div class="shared-meta" style="margin-top:8px">${j.hint ? escapeHtml(j.hint) : ""}</div>`;
-        return;
-      }
-      return showError();
-    }
+    const passphrase = getSharedPassphrase(d.org_id);
     const prog = document.getElementById("prog");
     const spin = document.getElementById("spin");
     const meta = document.getElementById("meta");
     const previewArea = document.getElementById("preview-area");
     const dlBtn = document.getElementById("dl-btn");
-    // fetch ciphertext
-    const ctBlob = await downloadWithProgress(r, (pct, txt) => {
+    const ct = await fetchAllChunksShared(token, password, d.size_bytes, (pct, txt) => {
       spin.style.display = "none";
       prog.textContent = txt;
     });
     prog.textContent = "Decrypting…";
-    const ctBuf = await ctBlob.arrayBuffer();
-    const ct = new Uint8Array(ctBuf);
-    const iv = ct.slice(0, 12);
-    const passphrase = getSharedPassphrase(d.org_id);
     let plain;
     try {
-      const key = await deriveKey(passphrase);
-      plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct.slice(12));
+      plain = await decryptAssembled(ct, passphrase);
     } catch (e) {
-      prog.innerHTML = `<span style="color:var(--danger)">Decryption failed</span>`;
+      prog.innerHTML = `<span style="color:var(--danger)">Decryption failed (wrong passphrase?)</span>`;
       return;
     }
     const ext = (d.filename || "").split(".").pop().toLowerCase();

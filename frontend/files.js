@@ -413,7 +413,7 @@ function renderFileCard(f, v, index) {
           <button onclick="shareFile('${f.id}','${safeName}'); closeAllMenus()">Share</button>
           <button onclick="emailFile('${f.id}','${safeName}'); closeAllMenus()">Email</button>
           <button onclick="editFile('${f.id}','${safeName}','${v ? v.size_bytes : 0}'); closeAllMenus()">Edit</button>
-          <button onclick="downloadFile('${f.id}','${safeName}'); closeAllMenus()">⬇ Download</button>
+          <button onclick="downloadFile('${f.id}','${safeName}','${f.size_bytes || 0}'); closeAllMenus()">⬇ Download</button>
           <button onclick="openVersions('${f.id}','${safeName}'); closeAllMenus()">History</button>
           ${canDelete ? `<button class="danger" onclick="deleteFile('${f.id}'); closeAllMenus()">Delete</button>` : ""}
         </div>
@@ -493,7 +493,7 @@ export async function refreshFiles() {
   }
 }
 
-export async function downloadFile(fileId, filename) {
+export async function downloadFile(fileId, filename, sizeBytes) {
   const passphrase = getAutoPassphrase();
 
   const toastEl = document.getElementById("toast");
@@ -502,7 +502,7 @@ export async function downloadFile(fileId, filename) {
 
   let ct;
   try {
-    ct = await fetchAllChunks(fileId);
+    ct = await fetchAllChunks(fileId, (pct, txt) => { toastEl.textContent = txt; }, sizeBytes);
   } catch (e) {
     toast("Download failed", "err"); return;
   }
@@ -764,16 +764,21 @@ export async function playMediaStreaming(content, ext, isAudio) {
 // Fetch every stored chunk with many small parallel requests (one per Telegram
 // message), mirroring the upload model. Avoids one 60s-bounded stream so large
 // files download/replay reliably on serverless. Stops at the first 404.
-async function fetchAllChunks(fileId) {
+async function fetchAllChunks(fileId, onProgress, total) {
   const results = [];
-  let next = 0, stop = false;
+  let next = 0, stop = false, received = 0;
   async function worker() {
     while (!stop) {
       const i = next++;
       const r = await fetch(`${API}/files/${fileId}/chunk/${i}`, {credentials: "same-origin"});
       if (r.status === 404) { stop = true; return; }
       if (!r.ok) throw new Error("Chunk fetch failed");
-      results[i] = new Uint8Array(await r.arrayBuffer());
+      const buf = new Uint8Array(await r.arrayBuffer());
+      results[i] = buf; received += buf.length;
+      if (onProgress) {
+        if (total) { const pct = Math.min(99, Math.round(received / total * 100)); onProgress(pct, `⬇ ${pct}%`); }
+        else onProgress(0, `⬇ ${fmtSize(received)}`);
+      }
     }
   }
   await Promise.all(Array.from({length: CONC}, worker));
