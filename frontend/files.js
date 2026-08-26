@@ -530,9 +530,15 @@ export async function downloadFile(fileId, filename) {
   } catch {
     toast("Decryption failed", "err"); return;
   }
+  const blob = new Blob([plain]);
+  const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([plain]));
-  a.download = filename; a.click();
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
   toast(`Downloaded ${filename}`);
 }
 
@@ -762,18 +768,8 @@ export async function playMediaStreaming(content, ext, isAudio) {
   const mime = isAudio
     ? (ext === "wav" ? "audio/wav" : ext === "ogg" ? "audio/ogg" : ext === "m4a" ? "audio/mp4" : "audio/mpeg")
     : (ext === "webm" ? "video/webm" : ext === "ogv" ? "video/ogg" : "video/mp4");
-  // True streaming (MediaSource) is only possible for fragmented MP4 video.
-  // Everything else falls back to the proven whole-blob player.
-  const wantMSE = !isAudio && ext === "mp4" && typeof MediaSource !== "undefined" && MediaSource.isTypeSupported("video/mp4");
   content.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Decrypting and preparing playback…</div>';
   try {
-    if (wantMSE) {
-      try {
-        const { reader } = await openPreviewStream();
-        await playViaMSE(content, mime, key, reader);
-        return;
-      } catch (e) { /* not fragmented / codec unsupported → fall back to whole-blob */ }
-    }
     const { reader, total } = await openPreviewStream();
     await playViaBlob(content, ext, isAudio, mime, key, reader, total);
   } catch (err) {
@@ -829,19 +825,6 @@ async function streamDecryptRecords(reader, key, onPlain) {
   }
 }
 
-function concatBytes(chunks) {
-  let n = 0; for (const c of chunks) n += c.length;
-  const out = new Uint8Array(n); let o = 0;
-  for (const c of chunks) { out.set(c, o); o += c.length; }
-  return out;
-}
-
-function readU64(buf, off) {
-  const hi = _readU32be(buf, off);
-  const lo = _readU32be(buf, off + 4);
-  return hi * 4294967296 + lo;
-}
-
 async function playViaBlob(content, ext, isAudio, mime, key, reader, total) {
   const parts = [];
   await streamDecryptRecords(reader, key, (p) => parts.push(p));
@@ -866,67 +849,6 @@ async function playViaBlob(content, ext, isAudio, mime, key, reader, total) {
 // Fragmented-MP4 streaming: decrypt records, split the plaintext into BMFF
 // init (ftyp+moov) + media segments (moof+mdat…), and append to MediaSource
 // as they arrive — so the whole file is never held in memory.
-async function playViaMSE(content, mime, key, reader) {
-  const ms = new MediaSource();
-  const media = document.createElement("video");
-  media.controls = true;
-  media.style.maxWidth = "100%"; media.style.maxHeight = "80vh"; media.style.display = "block"; media.style.margin = "auto";
-  media.src = URL.createObjectURL(ms);
-  content.innerHTML = "";
-  content.appendChild(media);
-  await new Promise((res, rej) => {
-    ms.addEventListener("sourceopen", () => res(), {once: true});
-    ms.addEventListener("error", () => rej(new Error("MediaSource open failed")), {once: true});
-  });
-  let sb;
-  try { sb = ms.addSourceBuffer(mime); }
-  catch (e) { throw new Error("MSE codec unsupported"); }
-  const appendBuf = (buf) => new Promise((res, rej) => {
-    const onEnd = () => { cleanup(); res(); };
-    const onErr = () => { cleanup(); rej(new Error("MSE append failed")); };
-    const cleanup = () => { sb.removeEventListener("updateend", onEnd); sb.removeEventListener("error", onErr); };
-    sb.addEventListener("updateend", onEnd);
-    sb.addEventListener("error", onErr);
-    try { sb.appendBuffer(buf); } catch (e) { onErr(); }
-  });
-  let pending = new Uint8Array(0);
-  let initParts = [], segParts = [], seenMoof = false;
-  const feedBoxes = async (plain) => {
-    pending = concatBytes([pending, plain]);
-    while (pending.length >= 8) {
-      let size = _readU32be(pending, 0);
-      let boxSize = size;
-      if (size === 1) { if (pending.length < 16) break; boxSize = readU64(pending, 8); }
-      else if (size === 0) { boxSize = pending.length; }
-      if (boxSize <= 0 || pending.length < boxSize) break;
-      const type = String.fromCharCode(pending[4], pending[5], pending[6], pending[7]);
-      const box = pending.subarray(0, boxSize);
-      pending = pending.subarray(boxSize);
-      if (!seenMoof) {
-        if (type === "moof") {
-          await appendBuf(concatBytes(initParts));
-          initParts = [];
-          seenMoof = true;
-          segParts = [box];
-        } else {
-          initParts.push(box);
-        }
-      } else {
-        if (type === "moof") {
-          await appendBuf(concatBytes(segParts));
-          segParts = [box];
-        } else {
-          segParts.push(box);
-        }
-      }
-    }
-  };
-  await streamDecryptRecords(reader, key, feedBoxes);
-  if (!seenMoof) throw new Error("Not a fragmented MP4 — cannot stream");
-  if (segParts.length) await appendBuf(concatBytes(segParts));
-  if (ms.readyState === "open") ms.endOfStream();
-}
-
 function loadPreviewAsText(container, ext) {
   const passphrase = getAutoPassphrase();
 container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Decrypting…</div>';
