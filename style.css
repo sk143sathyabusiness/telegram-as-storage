@@ -919,6 +919,11 @@ tbody td { padding: 13px 22px; font-size: 13px; }
 }
 
 /* ── Transfers drawer ───────────────────────────────────────────────────── */
+.transfers-scrim {
+  position: fixed; inset: 0; background: rgba(15, 23, 42, .28);
+  z-index: 65; opacity: 0; pointer-events: none; transition: opacity .25s ease;
+}
+.transfers-scrim.show { opacity: 1; pointer-events: auto; }
 .transfers-toggle {
   position: fixed; right: 18px; bottom: 18px; z-index: 60;
   display: flex; align-items: center; gap: 8px;
@@ -933,19 +938,22 @@ tbody td { padding: 13px 22px; font-size: 13px; }
 }
 .transfers-drawer {
   position: fixed; top: 0; right: 0; height: 100%; width: 340px; max-width: 92vw;
-  background: var(--panel); border-left: 1px solid var(--border);
+  background: var(--glass-bg); backdrop-filter: blur(16px) saturate(160%);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+  border-left: 1px solid var(--glass-border);
   transform: translateX(100%); transition: transform .25s ease; z-index: 70;
   display: flex; flex-direction: column; box-shadow: -8px 0 30px rgba(0,0,0,.35);
 }
 .transfers-drawer.open { transform: translateX(0); }
 .transfers-header {
   display: flex; justify-content: space-between; align-items: center;
-  padding: 12px 14px; border-bottom: 1px solid var(--border); font-weight: 600;
+  padding: 12px 14px; border-bottom: 1px solid var(--glass-border);
+  font-weight: 600; color: var(--text);
 }
 .transfers-list { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
 .transfers-empty { padding: 24px; color: var(--muted); text-align: center; font-size: 13px; }
-.transfer-row { background: var(--row); border: 1px solid var(--border); border-radius: 10px; padding: 10px; font-size: 12px; }
-.transfer-name { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; font-family: var(--mono); word-break: break-word; }
+.transfer-row { background: var(--glass-inner); border: 1px solid var(--glass-border); border-radius: 10px; padding: 10px; font-size: 12px; }
+.transfer-name { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; font-family: var(--mono); color: var(--text); word-break: break-word; }
 .transfer-name .transfer-fname { flex: 1; }
 .transfer-meta { color: var(--muted); margin-top: 5px; }
 .transfer-actions { display: flex; gap: 6px; margin-top: 8px; }

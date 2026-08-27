@@ -59,7 +59,11 @@ function _updateEmptyState() {
 
 function _openDrawerIfNeeded() {
   const d = _transfersDrawerEl();
-  if (d && !d.classList.contains("open")) d.classList.add("open");
+  if (d && !d.classList.contains("open")) {
+    d.classList.add("open");
+    const scrim = document.getElementById("transfers-scrim");
+    if (scrim) scrim.classList.add("show");
+  }
 }
 
 function _renderTransferRow(t) {
@@ -159,7 +163,9 @@ export function transferDismiss(id) {
 export function toggleTransfersDrawer() {
   const d = _transfersDrawerEl();
   if (!d) return;
-  d.classList.toggle("open");
+  const open = d.classList.toggle("open");
+  const scrim = document.getElementById("transfers-scrim");
+  if (scrim) scrim.classList.toggle("show", open);
   _refreshTransfersBadge();
 }
 

@@ -7,7 +7,7 @@
 <title>TeamVault</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=14">
+<link rel="stylesheet" href="style.css?v=15">
 </head>
 <body>
 
@@ -755,6 +755,7 @@
 <script type="module" src="frontend/orgs.js?v=17"></script>
 
 <!-- Transfers drawer (unified download + upload progress) -->
+<div id="transfers-scrim" class="transfers-scrim" onclick="toggleTransfersDrawer()"></div>
 <button id="transfers-toggle" class="transfers-toggle" onclick="toggleTransfersDrawer()" title="Transfers">
   ⤓ Transfers <span id="transfers-badge" class="transfers-badge" style="display:none">0</span>
 </button>
