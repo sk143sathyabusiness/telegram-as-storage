@@ -624,9 +624,9 @@ export async function downloadFileV2(fileId, filename, sizeBytes, opts = {}) {
   const ctrl = opts.ctrl || makeTransferCtrl();
   const id = opts.transferId || addTransfer({ kind: "download", name: filename, size: sizeBytes || 0, ctrl });
   const setRow = (patch) => { if (!opts.transferId) updateTransfer(id, patch); else updateTransfer(opts.transferId, patch); };
-  let ct;
+  let plain;
   try {
-    ct = await fetchAllChunks(fileId, (p) => {
+    plain = await fetchAndDecrypt(fileId, (p) => {
       setRow({ received: p.received, total: p.total, speed: p.speed, status: ctrl.paused ? "paused" : "active" });
       if (opts.onProgress) opts.onProgress(p);
     }, sizeBytes, ctrl);
@@ -636,15 +636,6 @@ export async function downloadFileV2(fileId, filename, sizeBytes, opts = {}) {
     setRow({ status: "error", error: e.message });
     if (!opts.silent) toast("Download failed", "err");
     return { ok: false, error: e.message };
-  }
-  setRow({ received: sizeBytes || 0, status: "decrypting" });
-  let plain;
-  try {
-    plain = await decryptAssembled(ct, passphrase);
-  } catch (e) {
-    setRow({ status: "error", error: "Decryption failed" });
-    if (!opts.silent) toast("Decryption failed", "err");
-    return { ok: false, error: "decrypt" };
   }
   const blob = new Blob([plain]);
   const url = URL.createObjectURL(blob);
@@ -954,6 +945,91 @@ async function fetchAllChunks(fileId, onProgress, total, ctrl) {
   return out;
 }
 
+// Decrypt one stored record buffer (a single Telegram message = one record).
+// Format per record: [u32be len][iv 12][ciphertext (len-12)]; the very first
+// record (index 0) is prefixed with a 16-byte magic. Records are independent,
+// so each can be decrypted as soon as its chunk finishes downloading.
+async function decryptRecord(buf, idx, key) {
+  let off = (idx === 0) ? 16 : 0;
+  if (off + 4 > buf.length) return new Uint8Array(0);
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const parts = [];
+  while (off + 4 <= buf.length) {
+    const len = dv.getUint32(off); off += 4;
+    if (len < 12 || off + len > buf.length) break;
+    const iv = buf.subarray(off, off + 12); off += 12;
+    const ct = buf.subarray(off, off + (len - 12)); off += (len - 12);
+    const pt = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct));
+    parts.push(pt);
+  }
+  let n = 0; for (const p of parts) n += p.length;
+  const out = new Uint8Array(n); let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+}
+
+// Download every chunk AND decrypt each record as it lands, so decryption
+// overlaps network instead of happening after the whole file is downloaded.
+// Returns the assembled plaintext Uint8Array.
+async function fetchAndDecrypt(fileId, onProgress, total, ctrl) {
+  const results = [];
+  let next = 0, stop = false, received = 0;
+  const conc = 4; // download+decrypt in parallel (still few enough to avoid FloodWait)
+  let lastSample = { received: 0, t: Date.now() };
+  const key = await deriveKey(getAutoPassphrase());
+  async function fetchChunk(i) {
+    let lastErr = null;
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      if (ctrl && ctrl.cancelled) throw new Error("cancelled");
+      let signal;
+      if (ctrl) { if (!ctrl.ac) ctrl.ac = new AbortController(); signal = ctrl.ac.signal; }
+      try {
+        const r = await fetch(`${API}/files/${fileId}/chunk/${i}`, {credentials: "same-origin", signal});
+        if (r.status === 404) return { done: true };
+        if (r.ok) {
+          const buf = new Uint8Array(await r.arrayBuffer());
+          return { buf };
+        }
+        let msg = "";
+        try { const j = await r.json(); msg = j.error || ""; } catch {}
+        lastErr = new Error(`HTTP ${r.status}${msg ? " — " + msg : ""}`);
+        if (r.status === 401 || r.status === 403) break;
+        await new Promise(res => setTimeout(res, 400 * attempt));
+      } catch (e) {
+        if (e && e.name === "AbortError") throw new Error("cancelled");
+        lastErr = e;
+        await new Promise(res => setTimeout(res, 400 * attempt));
+      }
+    }
+    throw lastErr || new Error("Chunk fetch failed");
+  }
+  async function worker() {
+    while (!stop) {
+      if (ctrl && ctrl.cancelled) return;
+      if (ctrl && ctrl.paused) { await new Promise(res => ctrl.waiters.push(res)); if (ctrl.cancelled) return; }
+      const i = next++;
+      const res = await fetchChunk(i);
+      if (res.done) { stop = true; return; }
+      const pt = await decryptRecord(res.buf, i, key);
+      results[i] = pt; received += pt.length;
+      if (onProgress) {
+        const now = Date.now();
+        const dt = (now - lastSample.t) / 1000;
+        let speed = 0;
+        if (dt >= 0.4) { speed = (received - lastSample.received) / dt; lastSample = { received, t: now }; }
+        const pct = total ? Math.min(99, Math.round(received / total * 100)) : 0;
+        onProgress({ received, total, pct, speed });
+      }
+    }
+  }
+  await Promise.all(Array.from({length: conc}, worker));
+  if (ctrl && ctrl.cancelled) throw new Error("cancelled");
+  let n = 0; for (const c of results) if (c) n += c.length;
+  const out = new Uint8Array(n); let o = 0;
+  for (const c of results) if (c) { out.set(c, o); o += c.length; }
+  return out;
+}
+
 async function playViaBlob(content, ext, isAudio, mime, plain) {
   const blob = new Blob([plain], {type: mime});
   const url = URL.createObjectURL(blob);
@@ -1012,13 +1088,11 @@ async function playMkvFromPreview(content) {
   const overlay = content.querySelector("#mkv-overlay");
   const setOverlay = (txt) => { if (overlay) overlay.textContent = txt; };
   try {
-    const ct = await fetchAllChunks(_previewFileId, (p) => {
+    const plain = await fetchAndDecrypt(_previewFileId, (p) => {
       const remaining = p.total ? (p.total - p.received) : 0;
       const eta = p.speed > 0 ? remaining / p.speed : 0;
       setOverlay(`⏳ Downloading & decrypting ${p.pct}% · ETA ${fmtEta(eta)}`);
     });
-    setOverlay("🔓 Decrypting…");
-    const plain = await decryptAssembled(ct, getAutoPassphrase());
     setOverlay("⚙️ Preparing playback…");
     await playMkvInto(video, plain, overlay);
   } catch (e) {
@@ -1039,7 +1113,7 @@ async function playMkvInto(video, plain, overlay) {
     const { Muxer, ArrayBufferTarget } = mp4muxer;
     const file = new File([plain], "video.mkv");
     const demuxer = new MkvDemuxer();
-    await demuxer.initFile(file, 1 * 1024 * 1024);
+    await demuxer.initFile(file, 4 * 1024 * 1024);
     const meta = await demuxer.getMeta();
     const data = await demuxer.getData();
     const v = meta.video, a = meta.audio;
@@ -1058,14 +1132,14 @@ async function playMkvInto(video, plain, overlay) {
       muxerOpts.audio = { codec: aCodec, numberOfChannels: a.channels || 2, sampleRate: a.rate || 48000 };
     }
     const muxer = new Muxer(muxerOpts);
-    // MKV block timestamps are in nanoseconds; mp4-muxer wants microseconds.
-    const NS_TO_US = 1 / 1000;
+    // mkv-demuxer packet timestamps are in SECONDS (it divides by 1e3); mp4-muxer wants MICROSECONDS.
+    const TS_MULT = 1e6;
     const vPkts = data.videoPackets || [];
     let firstV = true;
     for (let i = 0; i < vPkts.length; i++) {
       const p = vPkts[i];
-      const ts = Math.round(p.timestamp * NS_TO_US);
-      const nextTs = (i + 1 < vPkts.length) ? Math.round(vPkts[i + 1].timestamp * NS_TO_US) : ts;
+    const ts = Math.round(p.timestamp * TS_MULT);
+    const nextTs = (i + 1 < vPkts.length) ? Math.round(vPkts[i + 1].timestamp * TS_MULT) : ts;
       const dur = Math.max(0, nextTs - ts);
       const metaArg = (vCodec === "avc" && firstV && v.codecPrivate)
         ? { decoderConfig: { description: new Uint8Array(v.codecPrivate) } } : undefined;
@@ -1077,8 +1151,8 @@ async function playMkvInto(video, plain, overlay) {
       let firstA = true;
       for (let i = 0; i < aPkts.length; i++) {
         const p = aPkts[i];
-        const ts = Math.round(p.timestamp * NS_TO_US);
-        const nextTs = (i + 1 < aPkts.length) ? Math.round(aPkts[i + 1].timestamp * NS_TO_US) : ts;
+    const ts = Math.round(p.timestamp * TS_MULT);
+    const nextTs = (i + 1 < aPkts.length) ? Math.round(aPkts[i + 1].timestamp * TS_MULT) : ts;
         const dur = Math.max(0, nextTs - ts);
         const metaArg = (firstA && a.codecPrivate)
           ? { decoderConfig: { description: new Uint8Array(a.codecPrivate) } } : undefined;
