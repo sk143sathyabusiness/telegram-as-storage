@@ -139,6 +139,7 @@
           <div style="flex:1"></div>
           <button class="btn-sm" onclick="openBulkMove()">📁 Move</button>
           <button class="btn-sm" onclick="bulkRestoreFiles()">♻️ Restore</button>
+          <button class="btn-sm" onclick="bulkDownloadFiles()">⬇ Download</button>
           <button class="btn-sm danger" onclick="bulkDeleteFiles()">🗑 Delete</button>
           <button class="btn-sm" onclick="clearBulkSelection()">Clear</button>
         </div>
@@ -748,9 +749,22 @@
 <script type="module" src="frontend/api.js?v=13"></script>
 <script type="module" src="frontend/auth.js?v=13"></script>
 <script type="module" src="frontend/folders.js?v=15"></script>
-<script type="module" src="frontend/files.js?v=27"></script>
+<script type="module" src="frontend/files.js?v=28"></script>
 <script type="module" src="frontend/sharing.js?v=13"></script>
 <script type="module" src="frontend/admin.js?v=18"></script>
 <script type="module" src="frontend/orgs.js?v=17"></script>
+
+<!-- Transfers drawer (unified download + upload progress) -->
+<button id="transfers-toggle" class="transfers-toggle" onclick="toggleTransfersDrawer()" title="Transfers">
+  ⤓ Transfers <span id="transfers-badge" class="transfers-badge" style="display:none">0</span>
+</button>
+<div id="transfers-drawer" class="transfers-drawer">
+  <div class="transfers-header">
+    <span>Transfers</span>
+    <button class="btn-mini" onclick="toggleTransfersDrawer()">✕</button>
+  </div>
+  <div id="transfers-list" class="transfers-list"></div>
+  <div id="transfers-empty" class="transfers-empty">No active transfers</div>
+</div>
 </body>
 </html>

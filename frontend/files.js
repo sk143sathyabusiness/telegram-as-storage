@@ -11,6 +11,158 @@ function fmtEta(sec) {
   return `${m}m ${s}s`;
 }
 
+// ── TRANSFERS DRAWER (unified download + upload progress) ──────────────
+const _transfers = new Map();
+let _transferSeq = 0;
+
+function makeTransferCtrl() {
+  return {
+    paused: false,
+    cancelled: false,
+    waiters: [],
+    ac: null,
+    abort() { this.cancel(); },
+    cancel() {
+      if (this.cancelled) return;
+      this.cancelled = true;
+      if (this.ac) { try { this.ac.abort(); } catch {} }
+      const ws = this.waiters; this.waiters = [];
+      ws.forEach(r => { try { r(); } catch {} });
+    },
+    pause() { if (!this.cancelled) this.paused = true; },
+    resume() {
+      if (this.cancelled) return;
+      this.paused = false;
+      const ws = this.waiters; this.waiters = [];
+      ws.forEach(r => { try { r(); } catch {} });
+    },
+  };
+}
+
+function _transfersDrawerEl() { return document.getElementById("transfers-drawer"); }
+function _transfersListEl() { return document.getElementById("transfers-list"); }
+function _transfersEmptyEl() { return document.getElementById("transfers-empty"); }
+
+function _refreshTransfersBadge() {
+  const b = document.getElementById("transfers-badge");
+  if (!b) return;
+  let active = 0;
+  for (const t of _transfers.values()) if (t.status === "active" || t.status === "paused") active++;
+  b.textContent = active;
+  b.style.display = active > 0 ? "inline-block" : "none";
+}
+
+function _updateEmptyState() {
+  const e = _transfersEmptyEl(); if (!e) return;
+  e.style.display = _transfers.size ? "none" : "block";
+}
+
+function _openDrawerIfNeeded() {
+  const d = _transfersDrawerEl();
+  if (d && !d.classList.contains("open")) d.classList.add("open");
+}
+
+function _renderTransferRow(t) {
+  let el = t.el;
+  if (!el) {
+    el = document.createElement("div");
+    el.className = "transfer-row";
+    _transfersListEl().appendChild(el);
+    t.el = el;
+  }
+  _updateTransferRow(t);
+}
+
+function _updateTransferRow(t) {
+  if (!t.el) return;
+  const pct = t.total ? Math.min(100, Math.round((t.received / t.total) * 100)) : (t.status === "done" ? 100 : 0);
+  let meta = "";
+  if (t.status === "active") {
+    const speed = t.speed || 0;
+    const remaining = t.total ? (t.total - t.received) : 0;
+    const eta = speed > 0 ? remaining / speed : 0;
+    meta = `${pct}% · ${fmtSpeed(speed)} · ETA ${fmtEta(eta)}`;
+  } else if (t.status === "paused") meta = `Paused ${pct}%`;
+  else if (t.status === "decrypting") meta = `Decrypting… ${pct}%`;
+  else if (t.status === "cancelled") meta = `Cancelled`;
+  else if (t.status === "done") meta = `Done · ${fmt(t.total || 0)}`;
+  else if (t.status === "error") meta = `Error: ${t.error || ""}`;
+  else meta = `${pct}%`;
+  const icon = t.kind === "upload" ? "⬆" : "⬇";
+  const live = (t.status === "active" || t.status === "paused");
+  const term = (t.status === "done" || t.status === "error" || t.status === "cancelled");
+  let barColor = "";
+  if (t.status === "error" || t.status === "cancelled") barColor = "background:var(--red);";
+  t.el.innerHTML = `
+    <div class="transfer-name"><span>${icon}</span><span class="transfer-fname">${escapeHtml(t.name)}</span></div>
+    <div class="pbar"><div class="pbar-fill" style="width:${pct}%;${barColor}"></div></div>
+    <div class="transfer-meta">${meta}</div>
+    <div class="transfer-actions">
+      ${live ? `<button class="btn-mini" onclick="transferToggle('${t.id}')">${t.status === "paused" ? "Resume" : "Pause"}</button>` : ""}
+      ${live ? `<button class="btn-mini danger" onclick="transferCancel('${t.id}')">Cancel</button>` : ""}
+      ${term ? `<button class="btn-mini" onclick="transferDismiss('${t.id}')">✕</button>` : ""}
+    </div>`;
+}
+
+export function addTransfer(opts) {
+  const id = "t" + (++_transferSeq);
+  const t = {
+    id, kind: opts.kind || "download", name: opts.name || "file",
+    size: opts.size || 0, received: 0, total: opts.size || 0,
+    speed: 0, status: "active", ctrl: opts.ctrl || null, el: null,
+  };
+  _transfers.set(id, t);
+  _renderTransferRow(t);
+  _openDrawerIfNeeded();
+  _refreshTransfersBadge();
+  _updateEmptyState();
+  return id;
+}
+
+export function updateTransfer(id, patch) {
+  const t = _transfers.get(id);
+  if (!t) return;
+  if (patch && typeof patch === "object") Object.assign(t, patch);
+  _updateTransferRow(t);
+  _refreshTransfersBadge();
+}
+
+export function finishTransfer(id, status) {
+  const t = _transfers.get(id);
+  if (!t) return;
+  t.status = status || "done";
+  if (t.status === "done") t.received = t.total;
+  _updateTransferRow(t);
+  _refreshTransfersBadge();
+}
+
+export function transferToggle(id) {
+  const t = _transfers.get(id);
+  if (!t || !t.ctrl) return;
+  if (t.status === "paused") { t.ctrl.resume(); updateTransfer(id, { status: "active" }); }
+  else if (t.status === "active") { t.ctrl.pause(); updateTransfer(id, { status: "paused" }); }
+}
+export function transferCancel(id) {
+  const t = _transfers.get(id);
+  if (!t || !t.ctrl) return;
+  t.ctrl.cancel();
+  updateTransfer(id, { status: "cancelled" });
+}
+export function transferDismiss(id) {
+  const t = _transfers.get(id);
+  if (!t) return;
+  _transfers.delete(id);
+  if (t.el && t.el.parentNode) t.el.parentNode.removeChild(t.el);
+  _refreshTransfersBadge();
+  _updateEmptyState();
+}
+export function toggleTransfersDrawer() {
+  const d = _transfersDrawerEl();
+  if (!d) return;
+  d.classList.toggle("open");
+  _refreshTransfersBadge();
+}
+
 // ── ENCRYPTION (behind the screen) ──────────────────────────────────────
 // Auto-derived per-org passphrase so users never enter it manually.
 // Uses org_id from state.currentUser (returned by /api/login and /api/me) —
@@ -115,11 +267,6 @@ export async function uploadFiles(triggerEl) {
   }
   if (!files || !files.length) return;
 
-  const area = document.getElementById("progress-area");
-  const itemsEl = document.getElementById("upload-items");
-  area.classList.add("visible");
-  itemsEl.innerHTML = "";
-
   let okCount = 0, errCount = 0;
   const errDetails = [];
   for (const file of files) {
@@ -127,7 +274,6 @@ export async function uploadFiles(triggerEl) {
     if (res.ok) okCount++;
     else { errCount++; if (res.error) errDetails.push(res.error); }
   }
-  area.classList.remove("visible");
   usedInput.value = "";
   refreshFiles();
   const msg = okCount ? `Uploaded ${okCount} file(s)` : "";
@@ -147,53 +293,22 @@ async function uploadFileChunked(file, passphrase) {
   const total = Math.max(1, Math.ceil(file.size / UPLOAD_CHUNK_BYTES));
   const messageIds = new Array(total);
   const CONC = 6; // parallel chunk uploads (bounded: Telegram allows multiple sessions per auth key)
-  const div = document.createElement("div");
-  div.className = "upload-item";
-  const pid = "p_" + Math.random().toString(36).slice(2);
-  const eid = "e_" + Math.random().toString(36).slice(2);
-  const ctrl = { paused: false, cancelled: false, waiters: [], ac: null };
-  div.innerHTML = `<div class="upload-item-name">${escapeHtml(file.name)} <span class="file-size" style="color:var(--muted);font-size:11px">${fmt(file.size)}</span></div>
-    <div class="pbar"><div class="pbar-fill" id="${pid}"></div></div>
-    <div class="upload-eta" id="${eid}"></div>
-    <div class="upload-actions">
-      <button class="btn-mini" id="${pid}-t" type="button">Pause</button>
-      <button class="btn-mini danger" id="${pid}-c" type="button">Cancel</button>
-    </div>`;
-  document.getElementById("upload-items").appendChild(div);
+  const ctrl = makeTransferCtrl();
+  const id = addTransfer({ kind: "upload", name: file.name, size: file.size, ctrl });
   const t0 = Date.now();
   let done = 0;
-  const setEta = (txt, cls) => {
-    const el = document.getElementById(eid); if (!el) return;
-    el.textContent = txt; el.className = "upload-eta" + (cls ? " " + cls : "");
-  };
   const updateProgress = () => {
     const pct = Math.round((done / total) * 100);
-    const pidEl = document.getElementById(pid); if (pidEl) pidEl.style.width = pct + "%";
-    if (ctrl.cancelled) return setEta("Cancelled", "cancelled");
-    if (ctrl.paused) return setEta(`Paused ${pct}%`, "paused");
     const elapsed = (Date.now() - t0) / 1000;
     const speed = (done * UPLOAD_CHUNK_BYTES) / Math.max(elapsed, .01);
     const eta = Math.round(((total - done) * UPLOAD_CHUNK_BYTES) / Math.max(speed, 1));
-    setEta(`${pct}% · ${fmtSpeed(speed)} · ETA ${fmtEta(eta)}`);
+    updateTransfer(id, {
+      received: done * UPLOAD_CHUNK_BYTES,
+      total: total * UPLOAD_CHUNK_BYTES,
+      speed,
+      status: ctrl.cancelled ? "cancelled" : ctrl.paused ? "paused" : "active",
+    });
   };
-  const pauseBtn = div.querySelector(`#${pid}-t`);
-  const cancelBtn = div.querySelector(`#${pid}-c`);
-  pauseBtn.addEventListener("click", () => {
-    if (ctrl.cancelled) return;
-    ctrl.paused = !ctrl.paused;
-    pauseBtn.textContent = ctrl.paused ? "Resume" : "Pause";
-    if (!ctrl.paused) { const ws = ctrl.waiters; ctrl.waiters = []; ws.forEach(r => r()); }
-    updateProgress();
-  });
-  cancelBtn.addEventListener("click", () => {
-    if (ctrl.cancelled) return;
-    ctrl.cancelled = true;
-    if (!ctrl.ac) ctrl.ac = new AbortController();
-    ctrl.ac.abort();
-    const ws = ctrl.waiters; ctrl.waiters = []; ws.forEach(r => r());
-    pauseBtn.disabled = true; cancelBtn.disabled = true;
-    setEta("Cancelled", "cancelled");
-  });
   try {
     async function buildRecord(idx) {
       const start = idx * UPLOAD_CHUNK_BYTES;
@@ -241,17 +356,18 @@ async function uploadFileChunked(file, passphrase) {
       }
     }
     await Promise.all(Array.from({ length: CONC }, worker));
-    if (ctrl.cancelled) return { ok: false, error: "cancelled" };
+    if (ctrl.cancelled) { updateTransfer(id, { status: "cancelled" }); return { ok: false, error: "cancelled" }; }
     if (messageIds.some(m => m == null)) throw new Error("missing message ids");
     const c = await _xhrPostJSON(`${API}/files/commit`, {
       filename: file.name, folder_id: folderId, sha256: "", total_size: file.size, message_ids: messageIds,
     }, ctrl.ac ? ctrl.ac.signal : undefined);
-    if (ctrl.cancelled || c.aborted) return { ok: false, error: "cancelled" };
+    if (ctrl.cancelled || c.aborted) { updateTransfer(id, { status: "cancelled" }); return { ok: false, error: "cancelled" }; }
     if (!c.ok) throw new Error(c.error || "commit failed");
+    finishTransfer(id, "done");
     return { ok: true };
   } catch (e) {
-    if (ctrl.cancelled) setEta("Cancelled", "cancelled");
-    else setEta("Failed");
+    if (ctrl.cancelled) updateTransfer(id, { status: "cancelled" });
+    else updateTransfer(id, { status: "error", error: e.message });
     return { ok: false, error: e.message };
   }
 }
@@ -446,6 +562,7 @@ async function runFileSearch(q) {
   for (let i = 0; i < files.length; i++) {
     const f = files[i];
     const v = f.current_version;
+    fileMetaCache.set(f.id, { name: f.name, size: (v && v.size_bytes) || 0 });
     const card = renderFileCard(f, v, i);
     if (grid) grid.appendChild(card);
     // lazy 1:1 preview (IntersectionObserver, cache, max 3 concurrent)
@@ -481,6 +598,7 @@ export async function refreshFiles() {
   for (let i = 0; i < files.length; i++) {
     const f = files[i];
     const v = f.current_version;
+    fileMetaCache.set(f.id, { name: f.name, size: (v && v.size_bytes) || 0 });
     const card = renderFileCard(f, v, i);
     if (grid) grid.appendChild(card);
     if (typeof thumbObserver !== "undefined" && thumbObserver) thumbObserver.observe(card);
@@ -493,26 +611,34 @@ export async function refreshFiles() {
   }
 }
 
-export async function downloadFile(fileId, filename, sizeBytes) {
+// Downloads a file with a live Transfers-drawer entry (progress + ETA + pause/cancel).
+// opts: { silent, onProgress(p), ctrl, transferId }
+export async function downloadFileV2(fileId, filename, sizeBytes, opts = {}) {
   const passphrase = getAutoPassphrase();
-
-  const toastEl = document.getElementById("toast");
-  toastEl.className = "toast show";
-  toastEl.textContent = "⬇ Downloading…";
-
+  const ctrl = opts.ctrl || makeTransferCtrl();
+  const id = opts.transferId || addTransfer({ kind: "download", name: filename, size: sizeBytes || 0, ctrl });
+  const setRow = (patch) => { if (!opts.transferId) updateTransfer(id, patch); else updateTransfer(opts.transferId, patch); };
   let ct;
   try {
-    ct = await fetchAllChunks(fileId, (pct, txt) => { toastEl.textContent = txt; }, sizeBytes);
+    ct = await fetchAllChunks(fileId, (p) => {
+      setRow({ received: p.received, total: p.total, speed: p.speed, status: ctrl.paused ? "paused" : "active" });
+      if (opts.onProgress) opts.onProgress(p);
+    }, sizeBytes, ctrl);
   } catch (e) {
+    if (ctrl.cancelled) { setRow({ status: "cancelled" }); return { ok: false, cancelled: true }; }
     console.error("Download failed:", e);
-    toast("Download failed", "err"); return;
+    setRow({ status: "error", error: e.message });
+    if (!opts.silent) toast("Download failed", "err");
+    return { ok: false, error: e.message };
   }
-  toastEl.textContent = "🔓 Decrypting…";
+  setRow({ received: sizeBytes || 0, status: "decrypting" });
   let plain;
   try {
     plain = await decryptAssembled(ct, passphrase);
-  } catch {
-    toast("Decryption failed", "err"); return;
+  } catch (e) {
+    setRow({ status: "error", error: "Decryption failed" });
+    if (!opts.silent) toast("Decryption failed", "err");
+    return { ok: false, error: "decrypt" };
   }
   const blob = new Blob([plain]);
   const url = URL.createObjectURL(blob);
@@ -523,7 +649,13 @@ export async function downloadFile(fileId, filename, sizeBytes) {
   a.click();
   document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 60000);
-  toast(`Downloaded ${filename}`);
+  finishTransfer(id, "done");
+  if (!opts.silent) toast(`Downloaded ${filename}`);
+  return { ok: true, id };
+}
+
+export async function downloadFile(fileId, filename, sizeBytes) {
+  await downloadFileV2(fileId, filename, sizeBytes);
 }
 
 export async function deleteFile(fileId) {
@@ -759,15 +891,19 @@ export async function playMediaStreaming(content, ext, isAudio) {
 // Fetch every stored chunk with many small parallel requests (one per Telegram
 // message), mirroring the upload model. Avoids one 60s-bounded stream so large
 // files download/replay reliably on serverless. Stops at the first 404.
-async function fetchAllChunks(fileId, onProgress, total) {
+async function fetchAllChunks(fileId, onProgress, total, ctrl) {
   const results = [];
   let next = 0, stop = false, received = 0;
   const conc = 3; // fewer parallel requests -> fewer simultaneous Telegram connections (avoids FloodWait)
+  let lastSample = { received: 0, t: Date.now() };
   async function fetchChunk(i) {
     let lastErr = null;
     for (let attempt = 1; attempt <= 4; attempt++) {
+      if (ctrl && ctrl.cancelled) throw new Error("cancelled");
+      let signal;
+      if (ctrl) { if (!ctrl.ac) ctrl.ac = new AbortController(); signal = ctrl.ac.signal; }
       try {
-        const r = await fetch(`${API}/files/${fileId}/chunk/${i}`, {credentials: "same-origin"});
+        const r = await fetch(`${API}/files/${fileId}/chunk/${i}`, {credentials: "same-origin", signal});
         if (r.status === 404) return { done: true };
         if (r.ok) {
           const buf = new Uint8Array(await r.arrayBuffer());
@@ -779,6 +915,7 @@ async function fetchAllChunks(fileId, onProgress, total) {
         if (r.status === 401 || r.status === 403) break; // auth errors: don't retry
         await new Promise(res => setTimeout(res, 400 * attempt));
       } catch (e) {
+        if (e && e.name === "AbortError") throw new Error("cancelled");
         lastErr = e;
         await new Promise(res => setTimeout(res, 400 * attempt));
       }
@@ -787,17 +924,24 @@ async function fetchAllChunks(fileId, onProgress, total) {
   }
   async function worker() {
     while (!stop) {
+      if (ctrl && ctrl.cancelled) return;
+      if (ctrl && ctrl.paused) { await new Promise(res => ctrl.waiters.push(res)); if (ctrl.cancelled) return; }
       const i = next++;
       const res = await fetchChunk(i);
       if (res.done) { stop = true; return; }
       results[i] = res.buf; received += res.buf.length;
       if (onProgress) {
-        if (total) { const pct = Math.min(99, Math.round(received / total * 100)); onProgress(pct, `⬇ ${pct}%`); }
-        else onProgress(0, `⬇ ${fmt(received)}`);
+        const now = Date.now();
+        const dt = (now - lastSample.t) / 1000;
+        let speed = 0;
+        if (dt >= 0.4) { speed = (received - lastSample.received) / dt; lastSample = { received, t: now }; }
+        const pct = total ? Math.min(99, Math.round(received / total * 100)) : 0;
+        onProgress({ received, total, pct, speed });
       }
     }
   }
   await Promise.all(Array.from({length: conc}, worker));
+  if (ctrl && ctrl.cancelled) throw new Error("cancelled");
   let n = 0; for (const c of results) if (c) n += c.length;
   const out = new Uint8Array(n); let o = 0;
   for (const c of results) if (c) { out.set(c, o); o += c.length; }
@@ -853,18 +997,32 @@ function showMkvFallback(content) {
     </div>`;
 }
 async function playMkvFromPreview(content) {
-  content.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Decrypting MKV…</div>';
+  content.innerHTML = `
+    <div style="text-align:center">
+      <video id="mkv-video" controls style="max-width:100%;max-height:80vh;display:block;margin:auto;background:#000"></video>
+      <div id="mkv-overlay" style="color:var(--muted);font-size:13px;padding:10px">⏳ Preparing…</div>
+    </div>`;
+  const video = content.querySelector("#mkv-video");
+  const overlay = content.querySelector("#mkv-overlay");
+  const setOverlay = (txt) => { if (overlay) overlay.textContent = txt; };
   try {
-    const ct = await fetchAllChunks(_previewFileId);
+    const ct = await fetchAllChunks(_previewFileId, (p) => {
+      const remaining = p.total ? (p.total - p.received) : 0;
+      const eta = p.speed > 0 ? remaining / p.speed : 0;
+      setOverlay(`⏳ Downloading & decrypting ${p.pct}% · ETA ${fmtEta(eta)}`);
+    });
+    setOverlay("🔓 Decrypting…");
     const plain = await decryptAssembled(ct, getAutoPassphrase());
-    await playMkv(content, plain);
+    setOverlay("⚙️ Preparing playback…");
+    await playMkvInto(video, plain, overlay);
   } catch (e) {
-    console.error("MKV decrypt failed:", e);
+    console.error("MKV prepare failed:", e);
     showMkvFallback(content);
   }
 }
-async function playMkv(content, plain) {
-  content.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Remuxing MKV for playback…</div>';
+// Demux the decrypted MKV and remux to fragmented MP4 into the given <video>.
+// Throws on error/unsupported codec so the caller can show the fallback.
+async function playMkvInto(video, plain, overlay) {
   let url = null;
   try {
     const [mkvMod, mp4muxer] = await Promise.all([
@@ -925,17 +1083,14 @@ async function playMkv(content, plain) {
     muxer.finalize();
     const blob = new Blob([muxer.target.buffer], { type: "video/mp4" });
     url = URL.createObjectURL(blob);
-    const media = document.createElement("video");
-    media.controls = true;
-    media.style.maxWidth = "100%"; media.style.maxHeight = "80vh"; media.style.display = "block"; media.style.margin = "auto";
-    content.innerHTML = "";
-    content.appendChild(media);
-    media.src = url;
-    media.load();
+    video.src = url;
+    video.load();
+    try { await video.play(); } catch {}
+    if (overlay) overlay.textContent = "";
   } catch (err) {
     console.error("MKV remux failed:", err);
     if (url) { URL.revokeObjectURL(url); url = null; }
-    showMkvFallback(content);
+    throw err; // caller shows fallback
   }
 }
 
@@ -1189,6 +1344,7 @@ document.getElementById("file-grid")?.addEventListener("dblclick", e => {
 
 // ── BULK OPERATIONS (Phase-1 O3) ─────────────────────────────────────────────
 const _selected = new Set();
+const fileMetaCache = new Map(); // id -> { name, size } for bulk actions
 
 export function toggleFileSelect(fileId, checkbox) {
   if (checkbox.checked) _selected.add(fileId);
@@ -1259,6 +1415,42 @@ export async function bulkRestoreFiles() {
   else toast(d.error || "Bulk restore failed", "err");
 }
 
+// Download each selected file as its own browser download, each tracked in the
+// Transfers drawer, plus one aggregate overall row (capped concurrency to avoid
+// browser multi-download prompts and Telegram FloodWait).
+export async function bulkDownloadFiles() {
+  if (!_selected.size) return;
+  const items = [];
+  for (const id of _selected) {
+    const m = fileMetaCache.get(id);
+    if (m) items.push({ id, name: m.name, size: m.size || 0 });
+  }
+  if (!items.length) { toast("Nothing to download", "err"); return; }
+  const bulkTotal = items.reduce((s, i) => s + (i.size || 0), 0);
+  const overallId = addTransfer({ kind: "download", name: `Bulk download · ${items.length} files`, size: bulkTotal, ctrl: null });
+  const snap = new Map();
+  let next = 0;
+  async function worker() {
+    for (let k; (k = next++) < items.length; ) {
+      const it = items[k];
+      const r = await downloadFileV2(it.id, it.name, it.size, {
+        silent: true,
+        onProgress: (p) => {
+          snap.set(k, p.received);
+          let rec = 0; for (const v of snap.values()) rec += v;
+          updateTransfer(overallId, { received: rec, total: bulkTotal, speed: p.speed, status: "active" });
+        },
+      });
+      snap.set(k, it.size);
+      let rec = 0; for (const v of snap.values()) rec += v;
+      updateTransfer(overallId, { received: rec, total: bulkTotal, status: r.ok ? "active" : "error" });
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(2, items.length) }, worker));
+  finishTransfer(overallId, "done");
+  toast(`Bulk download finished (${items.length} files)`);
+}
+
 export async function openBulkMove() {
   if (!_selected.size) return;
   const r = await fetch(`${API}/folders`, { credentials: "same-origin" });
@@ -1323,6 +1515,14 @@ if (typeof window !== "undefined") {
   window.updateStorageMeter = updateStorageMeter;
   window.bulkDeleteFiles = bulkDeleteFiles;
   window.bulkRestoreFiles = bulkRestoreFiles;
+  window.bulkDownloadFiles = bulkDownloadFiles;
   window.openBulkMove = openBulkMove;
   window.confirmBulkMove = confirmBulkMove;
+
+  // Transfers drawer
+  window.downloadFileV2 = downloadFileV2;
+  window.toggleTransfersDrawer = toggleTransfersDrawer;
+  window.transferToggle = transferToggle;
+  window.transferCancel = transferCancel;
+  window.transferDismiss = transferDismiss;
 }
