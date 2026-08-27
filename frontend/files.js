@@ -1136,7 +1136,7 @@ async function playMkvInto(video, plain, overlay) {
     const muxer = new Muxer(muxerOpts);
     // mkv-demuxer packet timestamps are in SECONDS (it divides by 1e3); mp4-muxer wants MICROSECONDS.
     const TS_MULT = 1e6;
-    const vPkts = data.videoPackets || [];
+    const vPkts = (data.videoPackets || []).slice().sort((x, y) => x.timestamp - y.timestamp);
     let firstV = true;
     for (let i = 0; i < vPkts.length; i++) {
       const p = vPkts[i];
@@ -1149,7 +1149,7 @@ async function playMkvInto(video, plain, overlay) {
       muxer.addVideoChunkRaw(plain.subarray(p.start, p.end), p.isKeyframe ? "key" : "delta", ts, dur, metaArg);
     }
     if (aCodec) {
-      const aPkts = data.audioPackets || [];
+      const aPkts = (data.audioPackets || []).slice().sort((x, y) => x.timestamp - y.timestamp);
       let firstA = true;
       for (let i = 0; i < aPkts.length; i++) {
         const p = aPkts[i];
