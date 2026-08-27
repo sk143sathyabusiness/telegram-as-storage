@@ -504,6 +504,7 @@ export async function downloadFile(fileId, filename, sizeBytes) {
   try {
     ct = await fetchAllChunks(fileId, (pct, txt) => { toastEl.textContent = txt; }, sizeBytes);
   } catch (e) {
+    console.error("Download failed:", e);
     toast("Download failed", "err"); return;
   }
   toastEl.textContent = "🔓 Decrypting…";
@@ -668,13 +669,7 @@ export function previewFile(fileId, filename, sizeBytes) {
   } else if (["mp3","wav","ogg","m4a","aac","flac"].includes(ext)) {
     playMediaStreaming(content, ext, true);
   } else if (ext === "mkv") {
-    content.innerHTML = `
-      <div style="text-align:center;padding:60px 20px">
-        <div style="font-size:64px;margin-bottom:16px">🎬</div>
-        <div style="font-size:16px;margin-bottom:8px">${escapeHtml(filename)}</div>
-        <div style="font-size:13px;color:var(--muted);margin-bottom:20px">MKV can't be played inside the browser (no in-browser decoder). Download to view it.</div>
-        <button class="btn-sm active" onclick="downloadPreviewFile()">⬇ Download to view</button>
-      </div>`;
+    playMkvFromPreview(content);
   } else if (["txt","md","json","csv","html","css","js","py","java","c","cpp","h","xml","yaml","yml","sh","log","ini","cfg","conf","env","sql","rb","go","rs","ts","tsx","jsx","vue","svelte","toml"].includes(ext)) {
     loadPreviewAsText(content, ext);
   } else if (ext === "docx") {
@@ -767,21 +762,42 @@ export async function playMediaStreaming(content, ext, isAudio) {
 async function fetchAllChunks(fileId, onProgress, total) {
   const results = [];
   let next = 0, stop = false, received = 0;
+  const conc = 3; // fewer parallel requests -> fewer simultaneous Telegram connections (avoids FloodWait)
+  async function fetchChunk(i) {
+    let lastErr = null;
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      try {
+        const r = await fetch(`${API}/files/${fileId}/chunk/${i}`, {credentials: "same-origin"});
+        if (r.status === 404) return { done: true };
+        if (r.ok) {
+          const buf = new Uint8Array(await r.arrayBuffer());
+          return { buf };
+        }
+        let msg = "";
+        try { const j = await r.json(); msg = j.error || ""; } catch {}
+        lastErr = new Error(`HTTP ${r.status}${msg ? " — " + msg : ""}`);
+        if (r.status === 401 || r.status === 403) break; // auth errors: don't retry
+        await new Promise(res => setTimeout(res, 400 * attempt));
+      } catch (e) {
+        lastErr = e;
+        await new Promise(res => setTimeout(res, 400 * attempt));
+      }
+    }
+    throw lastErr || new Error("Chunk fetch failed");
+  }
   async function worker() {
     while (!stop) {
       const i = next++;
-      const r = await fetch(`${API}/files/${fileId}/chunk/${i}`, {credentials: "same-origin"});
-      if (r.status === 404) { stop = true; return; }
-      if (!r.ok) throw new Error("Chunk fetch failed");
-      const buf = new Uint8Array(await r.arrayBuffer());
-      results[i] = buf; received += buf.length;
+      const res = await fetchChunk(i);
+      if (res.done) { stop = true; return; }
+      results[i] = res.buf; received += res.buf.length;
       if (onProgress) {
         if (total) { const pct = Math.min(99, Math.round(received / total * 100)); onProgress(pct, `⬇ ${pct}%`); }
         else onProgress(0, `⬇ ${fmt(received)}`);
       }
     }
   }
-  await Promise.all(Array.from({length: CONC}, worker));
+  await Promise.all(Array.from({length: conc}, worker));
   let n = 0; for (const c of results) if (c) n += c.length;
   const out = new Uint8Array(n); let o = 0;
   for (const c of results) if (c) { out.set(c, o); o += c.length; }
@@ -805,6 +821,122 @@ async function playViaBlob(content, ext, isAudio, mime, plain) {
   }
   media.src = url;
   media.load();
+}
+
+// ── MKV playback ─────────────────────────────────────────────────────────────
+// Browsers have no native MKV decoder. We decrypt in-browser, then demux the MKV
+// and remux it to fragmented MP4 (mp4-muxer) and play via MSE. Works on the
+// decrypted bytes only — zero-knowledge preserved. Unsupported codecs fall back
+// to the Download button. Libraries are imported lazily so a CDN/API hiccup can
+// never break the rest of the app.
+function mkvVideoCodec(id) {
+  const c = (id || "").toUpperCase();
+  if (c.includes("AVC") || c.includes("H264")) return "avc";
+  if (c.includes("HEVC") || c.includes("H265")) return "hevc";
+  if (c.includes("VP9")) return "vp9";
+  if (c.includes("AV1")) return "av1";
+  return null;
+}
+function mkvAudioCodec(id) {
+  const c = (id || "").toUpperCase();
+  if (c.includes("AAC")) return "aac";
+  if (c.includes("OPUS")) return "opus";
+  return null; // AC3/EAC3/FLAC/MP3 etc. not muxable to MP4 by mp4-muxer
+}
+function showMkvFallback(content) {
+  content.innerHTML = `
+    <div style="text-align:center;padding:60px 20px">
+      <div style="font-size:64px;margin-bottom:16px">🎬</div>
+      <div style="font-size:16px;margin-bottom:8px">${escapeHtml(_previewFilename)}</div>
+      <div style="font-size:13px;color:var(--muted);margin-bottom:20px">This MKV can't be played in-browser (codec not supported). Download to view it.</div>
+      <button class="btn-sm active" onclick="downloadPreviewFile()">⬇ Download to view</button>
+    </div>`;
+}
+async function playMkvFromPreview(content) {
+  content.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Decrypting MKV…</div>';
+  try {
+    const ct = await fetchAllChunks(_previewFileId);
+    const plain = await decryptAssembled(ct, getAutoPassphrase());
+    await playMkv(content, plain);
+  } catch (e) {
+    console.error("MKV decrypt failed:", e);
+    showMkvFallback(content);
+  }
+}
+async function playMkv(content, plain) {
+  content.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Remuxing MKV for playback…</div>';
+  let url = null;
+  try {
+    const [mkvMod, mp4muxer] = await Promise.all([
+      import("https://cdn.jsdelivr.net/npm/mkv-demuxer@0.1.0/+esm"),
+      import("https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/+esm"),
+    ]);
+    const MkvDemuxer = mkvMod.MkvDemuxer;
+    const { Muxer, ArrayBufferTarget } = mp4muxer;
+    const file = new File([plain], "video.mkv");
+    const demuxer = new MkvDemuxer();
+    await demuxer.initFile(file, 1 * 1024 * 1024);
+    const meta = await demuxer.getMeta();
+    const data = await demuxer.getData();
+    const v = meta.video, a = meta.audio;
+    if (!v || !v.codecID) throw new Error("No video track");
+    const vCodec = mkvVideoCodec(v.codecID);
+    if (!vCodec) throw new Error("Unsupported video codec: " + v.codecID);
+    const muxerOpts = {
+      target: new ArrayBufferTarget(),
+      fastStart: "in-memory",
+      firstTimestampBehavior: "offset",
+      video: { codec: vCodec, width: v.width, height: v.Height || v.height },
+    };
+    let aCodec = null;
+    if (a && a.codecID) aCodec = mkvAudioCodec(a.codecID);
+    if (aCodec) {
+      muxerOpts.audio = { codec: aCodec, numberOfChannels: a.channels || 2, sampleRate: a.rate || 48000 };
+    }
+    const muxer = new Muxer(muxerOpts);
+    // MKV block timestamps are in nanoseconds; mp4-muxer wants microseconds.
+    const NS_TO_US = 1 / 1000;
+    const vPkts = data.videoPackets || [];
+    let firstV = true;
+    for (let i = 0; i < vPkts.length; i++) {
+      const p = vPkts[i];
+      const ts = Math.round(p.timestamp * NS_TO_US);
+      const nextTs = (i + 1 < vPkts.length) ? Math.round(vPkts[i + 1].timestamp * NS_TO_US) : ts;
+      const dur = Math.max(0, nextTs - ts);
+      const metaArg = (vCodec === "avc" && firstV && v.codecPrivate)
+        ? { decoderConfig: { description: new Uint8Array(v.codecPrivate) } } : undefined;
+      if (firstV && vCodec === "avc") firstV = false;
+      muxer.addVideoChunkRaw(plain.subarray(p.start, p.end), p.isKeyframe ? "key" : "delta", ts, dur, metaArg);
+    }
+    if (aCodec) {
+      const aPkts = data.audioPackets || [];
+      let firstA = true;
+      for (let i = 0; i < aPkts.length; i++) {
+        const p = aPkts[i];
+        const ts = Math.round(p.timestamp * NS_TO_US);
+        const nextTs = (i + 1 < aPkts.length) ? Math.round(aPkts[i + 1].timestamp * NS_TO_US) : ts;
+        const dur = Math.max(0, nextTs - ts);
+        const metaArg = (firstA && a.codecPrivate)
+          ? { decoderConfig: { description: new Uint8Array(a.codecPrivate) } } : undefined;
+        if (firstA) firstA = false;
+        muxer.addAudioChunkRaw(plain.subarray(p.start, p.end), p.isKeyframe ? "key" : "delta", ts, dur, metaArg);
+      }
+    }
+    muxer.finalize();
+    const blob = new Blob([muxer.target.buffer], { type: "video/mp4" });
+    url = URL.createObjectURL(blob);
+    const media = document.createElement("video");
+    media.controls = true;
+    media.style.maxWidth = "100%"; media.style.maxHeight = "80vh"; media.style.display = "block"; media.style.margin = "auto";
+    content.innerHTML = "";
+    content.appendChild(media);
+    media.src = url;
+    media.load();
+  } catch (err) {
+    console.error("MKV remux failed:", err);
+    if (url) { URL.revokeObjectURL(url); url = null; }
+    showMkvFallback(content);
+  }
 }
 
 // Fragmented-MP4 streaming: decrypt records, split the plaintext into BMFF

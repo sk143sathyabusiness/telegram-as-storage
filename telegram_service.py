@@ -21,7 +21,7 @@ from typing import List, Dict, Optional
 from telethon import TelegramClient
 from telethon.tl.types import Message
 from telethon.tl.functions.channels import CreateChannelRequest
-from telethon.errors import ChatIdInvalidError
+from telethon.errors import ChatIdInvalidError, FloodWaitError
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -57,6 +57,11 @@ CONCURRENT_CHUNKS = int(os.environ.get("CONCURRENT_CHUNKS", 1))
 # Parallel MTProto connections used per chunk by FastTelethon (vendored parallel_file_transfer).
 # Forces several parallel part-transfers even for small chunks. Tune down if FloodWait hits.
 TG_TRANSFER_WORKERS = int(os.environ.get("TG_TRANSFER_WORKERS", 4))
+
+# Per-chunk DOWNLOAD connections. Kept at 1 so a single chunk request does not open
+# several parallel part-transfers — with CONC=6 browser chunk requests at once that
+# would mean ~24 simultaneous Telegram connections and trigger FloodWait.
+TG_DOWNLOAD_WORKERS = int(os.environ.get("TG_DOWNLOAD_WORKERS", 1))
 
 
 def is_configured() -> bool:
@@ -382,17 +387,30 @@ async def _download_chunks_streaming_async(channel_id, message_ids, progress_cal
         print(f"[TG] Downloading {len(message_ids)} chunk(s) from channel...")
         for i, msg_id in enumerate(message_ids):
             print(f"[TG] Downloading chunk {i + 1}/{len(message_ids)} (msg_id={msg_id})...")
-            msg = await client.get_messages(entity, ids=msg_id)
             chunk_buf = io.BytesIO()
-            try:
-                from fast_telethon import download_file as ft_download_file
-                await ft_download_file(client, msg.document, chunk_buf,
-                                       connection_count=TG_TRANSFER_WORKERS, progress_callback=progress_callback)
-            except Exception as e:
-                print(f"[TG] parallel download failed (chunk {i}), falling back to download_media: {e}")
-                chunk_buf.seek(0)
-                chunk_buf.truncate(0)
-                await client.download_media(msg, file=chunk_buf, progress_callback=progress_callback)
+            last_err = None
+            for attempt in range(1, 4):
+                try:
+                    msg = await client.get_messages(entity, ids=msg_id)
+                    if msg is None or getattr(msg, "document", None) is None:
+                        raise ValueError(f"Message {msg_id} has no document")
+                    try:
+                        from fast_telethon import download_file as ft_download_file
+                        await ft_download_file(client, msg.document, chunk_buf,
+                                               connection_count=TG_DOWNLOAD_WORKERS, progress_callback=progress_callback)
+                    except Exception as e:
+                        print(f"[TG] parallel download failed (chunk {i}), falling back to download_media: {e}")
+                        chunk_buf.seek(0)
+                        chunk_buf.truncate(0)
+                        await client.download_media(msg, file=chunk_buf, progress_callback=progress_callback)
+                    break
+                except FloodWaitError as e:
+                    last_err = e
+                    wait = min(int(e.seconds), 30)
+                    print(f"[TG] FloodWait ({wait}s) on chunk {i}, retry {attempt}/3")
+                    await asyncio.sleep(wait)
+            else:
+                raise last_err or RuntimeError(f"Failed to download chunk {i}")
             data = chunk_buf.getvalue()
             print(f"[TG] Chunk {i + 1} downloaded ({len(data)} bytes)")
             yield data
