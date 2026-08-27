@@ -413,7 +413,7 @@ function renderFileCard(f, v, index) {
           <button onclick="shareFile('${f.id}','${safeName}'); closeAllMenus()">Share</button>
           <button onclick="emailFile('${f.id}','${safeName}'); closeAllMenus()">Email</button>
           <button onclick="editFile('${f.id}','${safeName}','${v ? v.size_bytes : 0}'); closeAllMenus()">Edit</button>
-          <button onclick="downloadFile('${f.id}','${safeName}','${f.size_bytes || 0}'); closeAllMenus()">⬇ Download</button>
+          <button onclick="downloadFile('${f.id}','${safeName}','${f.current_version ? f.current_version.size_bytes : 0}'); closeAllMenus()">⬇ Download</button>
           <button onclick="openVersions('${f.id}','${safeName}'); closeAllMenus()">History</button>
           ${canDelete ? `<button class="danger" onclick="deleteFile('${f.id}'); closeAllMenus()">Delete</button>` : ""}
         </div>
@@ -777,7 +777,7 @@ async function fetchAllChunks(fileId, onProgress, total) {
       results[i] = buf; received += buf.length;
       if (onProgress) {
         if (total) { const pct = Math.min(99, Math.round(received / total * 100)); onProgress(pct, `⬇ ${pct}%`); }
-        else onProgress(0, `⬇ ${fmtSize(received)}`);
+        else onProgress(0, `⬇ ${fmt(received)}`);
       }
     }
   }
