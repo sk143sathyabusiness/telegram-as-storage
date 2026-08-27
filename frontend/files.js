@@ -298,7 +298,7 @@ async function uploadFileChunked(file, passphrase) {
   const folderId = state.currentFolderId || "";
   const total = Math.max(1, Math.ceil(file.size / UPLOAD_CHUNK_BYTES));
   const messageIds = new Array(total);
-  const CONC = 6; // parallel chunk uploads (bounded: Telegram allows multiple sessions per auth key)
+  const CONC = 8; // parallel chunk uploads (aggressive: more concurrency amortizes the per-chunk connect cost)
   const ctrl = makeTransferCtrl();
   const id = addTransfer({ kind: "upload", name: file.name, size: file.size, ctrl });
   const t0 = Date.now();
@@ -877,8 +877,7 @@ export async function playMediaStreaming(content, ext, isAudio) {
     : (ext === "webm" ? "video/webm" : ext === "ogv" ? "video/ogg" : "video/mp4");
   content.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Decrypting and preparing playback…</div>';
   try {
-    const ct = await fetchAllChunks(_previewFileId);
-    const plain = await decryptAssembled(ct, passphrase);
+    const plain = await fetchAndDecrypt(_previewFileId);
     playViaBlob(content, ext, isAudio, mime, plain);
   } catch (err) {
     content.innerHTML = `<div style="text-align:center;padding:40px;color:var(--danger)">Playback failed: ${escapeHtml(err.message)}<br><button class="btn-sm active" onclick="downloadPreviewFile()">⬇ Download to view</button></div>`;
@@ -974,7 +973,7 @@ async function decryptRecord(buf, idx, key) {
 async function fetchAndDecrypt(fileId, onProgress, total, ctrl) {
   const results = [];
   let next = 0, stop = false, received = 0;
-  const conc = 4; // download+decrypt in parallel (still few enough to avoid FloodWait)
+  const conc = 8; // download+decrypt in parallel (aggressive; per-chunk TG_DOWNLOAD_WORKERS multiplies connections)
   let lastSample = { received: 0, t: Date.now() };
   const key = await deriveKey(getAutoPassphrase());
   async function fetchChunk(i) {
@@ -1069,12 +1068,15 @@ function mkvAudioCodec(id) {
   if (c.includes("OPUS")) return "opus";
   return null; // AC3/EAC3/FLAC/MP3 etc. not muxable to MP4 by mp4-muxer
 }
-function showMkvFallback(content) {
+function showMkvFallback(content, errMsg) {
+  const detail = errMsg
+    ? `<div style="font-size:12px;color:var(--danger);margin-bottom:16px;word-break:break-word">${escapeHtml(errMsg)}</div>`
+    : `<div style="font-size:13px;color:var(--muted);margin-bottom:20px">This MKV can't be played in-browser (codec not supported). Download to view it.</div>`;
   content.innerHTML = `
     <div style="text-align:center;padding:60px 20px">
       <div style="font-size:64px;margin-bottom:16px">🎬</div>
       <div style="font-size:16px;margin-bottom:8px">${escapeHtml(_previewFilename)}</div>
-      <div style="font-size:13px;color:var(--muted);margin-bottom:20px">This MKV can't be played in-browser (codec not supported). Download to view it.</div>
+      ${detail}
       <button class="btn-sm active" onclick="downloadPreviewFile()">⬇ Download to view</button>
     </div>`;
 }
@@ -1097,7 +1099,7 @@ async function playMkvFromPreview(content) {
     await playMkvInto(video, plain, overlay);
   } catch (e) {
     console.error("MKV prepare failed:", e);
-    showMkvFallback(content);
+    showMkvFallback(content, e && e.message ? e.message : String(e));
   }
 }
 // Demux the decrypted MKV and remux to fragmented MP4 into the given <video>.
