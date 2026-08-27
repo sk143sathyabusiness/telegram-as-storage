@@ -507,8 +507,12 @@ def api_files_chunk_download(file_id, index):
         return jsonify({"error": "No Telegram chat_id configured"}), 500
 
     def generate():
-        for chunk in telegram_service.download_chunks_streaming(chat_id, [message_ids[index]]):
-            yield chunk
+        try:
+            for chunk in telegram_service.download_chunks_streaming(chat_id, [message_ids[index]]):
+                yield chunk
+        except Exception as e:
+            print(f"[CHUNK-DL] index={index} failed: {type(e).__name__}: {e}")
+            raise
 
     resp = Response(stream_with_context(generate()), mimetype="application/octet-stream")
     resp.headers["Content-Disposition"] = f'inline; filename="{fdata["name"]}.part{index}"'

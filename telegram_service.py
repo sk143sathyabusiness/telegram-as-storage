@@ -16,7 +16,6 @@ import os
 import io
 import hashlib
 import asyncio
-import threading
 from typing import List, Dict, Optional
 
 from telethon import TelegramClient
@@ -97,59 +96,11 @@ def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-# ---------------------------------------------------------------------------
-# Thread-local Telethon client cache.
-#
-# On serverless (Vercel) each chunk request would otherwise open a brand-new
-# Telethon connection (auth handshake) and disconnect — that handshake is the
-# dominant fixed cost of every upload/download. We cache ONE connected client
-# per worker thread so consecutive requests that land on the same warm
-# container reuse the connection. Thread-local (not global) keeps it safe under
-# Flask's threaded workers. The client is validated before reuse and dropped
-# (recreated) on any failure so a stale/frozen connection can't poison later
-# requests. We never disconnect the cached client between requests.
-# ---------------------------------------------------------------------------
-_local = threading.local()
-
-
-async def _get_client():
-    """Return a connected, authorized Telethon client, cached per worker thread."""
-    client = getattr(_local, "client", None)
-    if client is not None:
-        try:
-            if client.is_connected():
-                return client
-        except Exception:
-            client = None
-    client = _make_client()
-    await client.connect()
-    if not await client.is_user_authorized():
-        await client.disconnect()
-        _local.client = None
-        raise RuntimeError(
-            "Telethon session not authorized. Run the one-time login "
-            "flow to generate session_name.session before using this module."
-        )
-    _local.client = client
-    return client
-
-
-def _drop_client():
-    """Forget the cached client so the next call reconnects (used after errors)."""
-    client = getattr(_local, "client", None)
-    _local.client = None
-    if client is None:
-        return
-    # We may be inside a running event loop (the sync wrappers call asyncio.run),
-    # so never block on run_until_complete — fire the disconnect and move on.
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            loop.create_task(client.disconnect())
-        else:
-            loop.run_until_complete(client.disconnect())
-    except Exception:
-        pass
+# NOTE: we intentionally create a fresh Telethon client per request and
+# disconnect in `finally`. Vercel's serverless Python opens a NEW event loop on
+# every invocation, so a cached client would be bound to a closed loop on the
+# next request (→ 500). Per-request clients are safe; the parallelism / FloodWait
+# tuning below is what actually drives throughput.
 
 
 def _split_bytes(data: bytes) -> List[bytes]:
@@ -245,7 +196,14 @@ async def _upload_chunks_async(
     Returns:
         List of Telegram message IDs (ordered, one per chunk)
     """
-    client = await _get_client()
+    client = _make_client()
+    await client.connect()
+    if not await client.is_user_authorized():
+        await client.disconnect()
+        raise RuntimeError(
+            "Telethon session not authorized. Run the one-time login "
+            "flow to generate session_name.session before using this module."
+        )
 
     try:
         entity = await _resolve_entity(client, channel_id)
@@ -283,9 +241,8 @@ async def _upload_chunks_async(
             tasks = [_upload_with_sem(i, chunk) for i, chunk in enumerate(chunks)]
             message_ids = await asyncio.gather(*tasks)
             return list(message_ids)
-    except Exception:
-        _drop_client()
-        raise
+    finally:
+        await client.disconnect()
 
 
 def upload_chunks(
@@ -308,10 +265,17 @@ async def _upload_chunks_streaming_async(
     Upload from a readable stream, chunking into ~CHUNK_SIZE_BYTES pieces.
     Peak memory stays near CHUNK_SIZE_BYTES instead of the full file size.
 
-    Uses the thread-local cached client (no per-request connect handshake) and
-    retries each chunk through Telegram FloodWait with backoff.
+    Uses a fresh per-request client and retries each chunk through Telegram
+    FloodWait with backoff.
     """
-    client = await _get_client()
+    client = _make_client()
+    await client.connect()
+    if not await client.is_user_authorized():
+        await client.disconnect()
+        raise RuntimeError(
+            "Telethon session not authorized. Run the one-time login "
+            "flow to generate session_name.session before using this module."
+        )
     try:
         entity = await _resolve_entity(client, channel_id)
         message_ids = []
@@ -330,7 +294,7 @@ async def _upload_chunks_streaming_async(
                 except Exception:
                     pass
             total_chunks_est = (total_known // CHUNK_SIZE_BYTES + 1) if total_known else chunk_index + 2
-            # Retry the chunk through FloodWait / transient connection errors.
+            # Retry the chunk through FloodWait / transient errors (same client).
             last_err = None
             for attempt in range(1, 5):
                 try:
@@ -342,12 +306,9 @@ async def _upload_chunks_streaming_async(
                     wait = min(int(e.seconds), 30)
                     print(f"[TG] Upload FloodWait ({wait}s) on chunk {chunk_index}, retry {attempt}/4")
                     await asyncio.sleep(wait)
-                except Exception as e:  # likely a stale connection -> drop cached client, retry
+                except Exception as e:
                     last_err = e
                     print(f"[TG] Upload chunk {chunk_index} error (attempt {attempt}/4): {type(e).__name__}: {e}")
-                    _drop_client()
-                    client = await _get_client()
-                    entity = await _resolve_entity(client, channel_id)
                     await asyncio.sleep(min(attempt, 3))
             else:
                 raise last_err or RuntimeError(f"Failed to upload chunk {chunk_index}")
@@ -360,10 +321,8 @@ async def _upload_chunks_streaming_async(
             del chunk
         print(f"[TG] Upload complete. {len(message_ids)} chunk(s) sent.")
         return message_ids
-    except Exception:
-        # Leave the cached client for reuse on success; on hard failure drop it.
-        _drop_client()
-        raise
+    finally:
+        await client.disconnect()
 
 
 def upload_chunks_streaming(
@@ -388,7 +347,11 @@ async def _download_chunks_async(
     Chunks are downloaded in order and concatenated. For very large files,
     this uses an in-memory buffer — caller should process promptly.
     """
-    client = await _get_client()
+    client = _make_client()
+    await client.connect()
+    if not await client.is_user_authorized():
+        await client.disconnect()
+        raise RuntimeError("Telethon session not authorized.")
     try:
         entity = await _resolve_entity(client, channel_id)
         print(f"[TG] Downloading {len(message_ids)} chunk(s)...")
@@ -413,9 +376,8 @@ async def _download_chunks_async(
         assembled.close()
         print(f"[TG] Download complete. Total {len(data)} bytes.")
         return data
-    except Exception:
-        _drop_client()
-        raise
+    finally:
+        await client.disconnect()
 
 
 def download_chunks(
@@ -436,10 +398,14 @@ def download_chunks(
 async def _download_chunks_streaming_async(channel_id, message_ids, progress_callback=None):
     """Async generator — yields each chunk as bytes, in order.
 
-    Uses the thread-local cached client (no per-request connect handshake) and
-    retries each chunk through Telegram FloodWait with backoff.
+    Uses a fresh per-request client and retries each chunk through Telegram
+    FloodWait with backoff.
     """
-    client = await _get_client()
+    client = _make_client()
+    await client.connect()
+    if not await client.is_user_authorized():
+        await client.disconnect()
+        raise RuntimeError("Telethon session not authorized.")
     try:
         entity = await _resolve_entity(client, channel_id)
         print(f"[TG] Downloading {len(message_ids)} chunk(s) from channel...")
@@ -467,12 +433,9 @@ async def _download_chunks_streaming_async(channel_id, message_ids, progress_cal
                     wait = min(int(e.seconds), 30)
                     print(f"[TG] FloodWait ({wait}s) on chunk {i}, retry {attempt}/4")
                     await asyncio.sleep(wait)
-                except Exception as e:  # likely a stale connection -> drop cached client, retry
+                except Exception as e:
                     last_err = e
                     print(f"[TG] Download chunk {i} error (attempt {attempt}/4): {type(e).__name__}: {e}")
-                    _drop_client()
-                    client = await _get_client()
-                    entity = await _resolve_entity(client, channel_id)
                     await asyncio.sleep(min(attempt, 3))
             else:
                 raise last_err or RuntimeError(f"Failed to download chunk {i}")
@@ -481,9 +444,8 @@ async def _download_chunks_streaming_async(channel_id, message_ids, progress_cal
             yield data
             chunk_buf.close()
         print(f"[TG] Download complete.")
-    except Exception:
-        _drop_client()
-        raise
+    finally:
+        await client.disconnect()
 
 
 def download_chunks_streaming(channel_id: int, message_ids: List[int]):
@@ -510,13 +472,13 @@ def download_chunks_streaming(channel_id: int, message_ids: List[int]):
 
 async def delete_file(channel_id: int, message_ids: List[int]) -> None:
     """Permanently delete all chunk messages for a file version (used on version purge / trash destroy)."""
-    client = await _get_client()
+    client = _make_client()
+    await client.connect()
     try:
         entity = await _resolve_entity(client, channel_id)
         await client.delete_messages(entity, message_ids)
-    except Exception:
-        _drop_client()
-        raise
+    finally:
+        await client.disconnect()
 
 
 def verify_bytes(data: bytes, expected_checksum: str) -> bool:
@@ -535,7 +497,8 @@ async def backup_essential_folder(channel_id: int, backup_channel_id: int, messa
     backups channel. Forwarding keeps bytes on Telegram's servers only.
     Returns the new message_ids in the backup channel.
     """
-    client = await _get_client()
+    client = _make_client()
+    await client.connect()
     try:
         entity = await _resolve_entity(client, channel_id)
         backup_entity = await _resolve_entity(client, backup_channel_id)
@@ -543,9 +506,8 @@ async def backup_essential_folder(channel_id: int, backup_channel_id: int, messa
         if isinstance(forwarded, Message):
             forwarded = [forwarded]
         return [m.id for m in forwarded]
-    except Exception:
-        _drop_client()
-        raise
+    finally:
+        await client.disconnect()
 
 
 async def _create_backup_channel_async(title: str) -> int:
@@ -555,14 +517,6 @@ async def _create_backup_channel_async(title: str) -> int:
     """
     if not is_configured():
         raise RuntimeError("Telegram not configured — set TG_API_ID, TG_API_HASH, and session")
-    # Clear any cached per-thread client so we don't run two clients on one thread.
-    old = getattr(_local, "client", None)
-    _local.client = None
-    if old is not None:
-        try:
-            await old.disconnect()
-        except Exception:
-            pass
     client = _make_client()
     await client.connect()
     if not await client.is_user_authorized():
