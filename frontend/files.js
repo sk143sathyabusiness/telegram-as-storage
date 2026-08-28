@@ -491,11 +491,35 @@ async function processThumbQueue() {
   const { fileId, ext, imgEl, iconEl } = thumbQueue.shift();
   thumbActive++;
   try {
-    const plain = await fetchChunkDecrypted(fileId, 0);
     const mime = getMimeForExt(ext);
+    const m = fileMetaCache.get(fileId);
+    const size = (m && m.size) || 0;
+    let plain;
+    // A single <=4MB image is stored as one Telegram message, so chunk 0 IS the
+    // whole image (fast). Larger images span multiple messages, so chunk 0 alone
+    // is only a partial/truncated image — fetch the full file in that case.
+    if (size > 4 * 1024 * 1024) {
+      plain = await fetchAndDecrypt(fileId, null, size);
+    } else {
+      plain = await fetchChunkDecrypted(fileId, 0);
+    }
     const blob = new Blob([plain], {type: mime});
     const url = URL.createObjectURL(blob);
     thumbCache.set(fileId, url);
+    imgEl.onerror = null; imgEl.onload = null;
+    if (size <= 4 * 1024 * 1024) {
+      // Partial (truncated) decode -> upgrade to the full file once.
+      imgEl.onerror = async () => {
+        try {
+          const full = await fetchAndDecrypt(fileId, null, size);
+          const b2 = new Blob([full], {type: mime});
+          const u2 = URL.createObjectURL(b2);
+          thumbCache.set(fileId, u2);
+          imgEl.onerror = null;
+          imgEl.src = u2; imgEl.style.display = "block"; if (iconEl) iconEl.style.display = "none";
+        } catch {}
+      };
+    }
     imgEl.src = url; imgEl.style.display = "block"; if (iconEl) iconEl.style.display = "none";
   } catch {} finally {
     thumbActive--;
@@ -847,6 +871,7 @@ function loadPreviewAsBlob(container, htmlTemplate) {
       if (audio) { const srcEl = audio.querySelector("source"); if (srcEl) srcEl.src = url; else audio.src = url; audio.load(); }
       else el.textContent = "Preview ready";
     } else {
+      el.onerror = () => { container.innerHTML = `<div style="text-align:center;padding:40px;color:var(--danger)">Image could not be decoded.<br><button class="btn-sm active" onclick="downloadPreviewFile()">⬇ Download to view</button></div>`; };
       el.src = url;
     }
   }).catch(err => {
