@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: telegram-as-storage
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
+    healthCheckPath: /
+    envVars:
+      - key: PORT
+        value: "10000"
+      - key: PYTHON_VERSION
+        value: "3.11"
+      # Set the rest in the Render dashboard (do NOT put secrets in this file):
+      # SUPABASE_URL, SUPABASE_KEY, SUPABASE_SERVICE_ROLE_KEY,
+      # TG_API_ID, TG_API_HASH, TG_SESSION_STRING, TG_TRANSFER_WORKERS, TG_DOWNLOAD_WORKERS
