@@ -214,6 +214,8 @@ export async function sha256Hex(blob) {
 // (Legacy files begin with a random 12-byte IV, which will never equal this constant.)
 export const CHUNKED_MAGIC = new Uint8Array([0x54,0x56,0x43,0x48,0x4e,0x4b,0x30,0x31, 0,0,0,0,0,0,0,0]); // "TVCHNK01" + 8 zero bytes
 const UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024; // 4 MB — stays under Vercel's ~4.5 MB request limit
+const REQ_TIMEOUT_MS = 45000;   // per chunk-request timeout — prevents infinite "stuck" hangs
+const OP_TIMEOUT_MS = 900000;   // overall download/playback watchdog (15 min)
 
 function _u32be(n) {
   return new Uint8Array([(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255]);
@@ -898,18 +900,25 @@ export async function playMediaStreaming(content, ext, isAudio) {
 // message), mirroring the upload model. Avoids one 60s-bounded stream so large
 // files download/replay reliably on serverless. Stops at the first 404.
 async function fetchAllChunks(fileId, onProgress, total, ctrl) {
+  ctrl = ctrl || makeTransferCtrl();
   const results = [];
   let next = 0, stop = false, received = 0;
   const conc = 3; // fewer parallel requests -> fewer simultaneous Telegram connections (avoids FloodWait)
   let lastSample = { received: 0, t: Date.now() };
+  const watchdog = setTimeout(() => { if (!ctrl.cancelled) ctrl.cancel(); }, OP_TIMEOUT_MS);
   async function fetchChunk(i) {
     let lastErr = null;
     for (let attempt = 1; attempt <= 4; attempt++) {
-      if (ctrl && ctrl.cancelled) throw new Error("cancelled");
-      let signal;
-      if (ctrl) { if (!ctrl.ac) ctrl.ac = new AbortController(); signal = ctrl.ac.signal; }
+      if (ctrl.cancelled) throw new Error("cancelled");
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), REQ_TIMEOUT_MS);
+      let onAbort;
+      if (ctrl.ac) {
+        if (ctrl.ac.signal.aborted) ac.abort();
+        else { onAbort = () => ac.abort(); ctrl.ac.signal.addEventListener("abort", onAbort); }
+      }
       try {
-        const r = await fetch(`${API}/files/${fileId}/chunk/${i}`, {credentials: "same-origin", signal});
+        const r = await fetch(`${API}/files/${fileId}/chunk/${i}`, {credentials: "same-origin", signal: ac.signal});
         if (r.status === 404) return { done: true };
         if (r.ok) {
           const buf = new Uint8Array(await r.arrayBuffer());
@@ -921,17 +930,24 @@ async function fetchAllChunks(fileId, onProgress, total, ctrl) {
         if (r.status === 401 || r.status === 403) break; // auth errors: don't retry
         await new Promise(res => setTimeout(res, 400 * attempt));
       } catch (e) {
-        if (e && e.name === "AbortError") throw new Error("cancelled");
-        lastErr = e;
+        if (e && e.name === "AbortError") {
+          if (ctrl.cancelled) throw new Error("cancelled");
+          lastErr = new Error(`Chunk ${i} request timed out after ${REQ_TIMEOUT_MS}ms`);
+        } else {
+          lastErr = e;
+        }
         await new Promise(res => setTimeout(res, 400 * attempt));
+      } finally {
+        clearTimeout(timer);
+        if (onAbort) ctrl.ac.signal.removeEventListener("abort", onAbort);
       }
     }
     throw lastErr || new Error("Chunk fetch failed");
   }
   async function worker() {
     while (!stop) {
-      if (ctrl && ctrl.cancelled) return;
-      if (ctrl && ctrl.paused) { await new Promise(res => ctrl.waiters.push(res)); if (ctrl.cancelled) return; }
+      if (ctrl.cancelled) return;
+      if (ctrl.paused) { await new Promise(res => ctrl.waiters.push(res)); if (ctrl.cancelled) return; }
       const i = next++;
       const res = await fetchChunk(i);
       if (res.done) { stop = true; return; }
@@ -946,12 +962,16 @@ async function fetchAllChunks(fileId, onProgress, total, ctrl) {
       }
     }
   }
-  await Promise.all(Array.from({length: conc}, worker));
-  if (ctrl && ctrl.cancelled) throw new Error("cancelled");
-  let n = 0; for (const c of results) if (c) n += c.length;
-  const out = new Uint8Array(n); let o = 0;
-  for (const c of results) if (c) { out.set(c, o); o += c.length; }
-  return out;
+  try {
+    await Promise.all(Array.from({length: conc}, worker));
+    if (ctrl.cancelled) throw new Error("cancelled");
+    let n = 0; for (const c of results) if (c) n += c.length;
+    const out = new Uint8Array(n); let o = 0;
+    for (const c of results) if (c) { out.set(c, o); o += c.length; }
+    return out;
+  } finally {
+    clearTimeout(watchdog);
+  }
 }
 
 // Decrypt one stored record buffer (a single Telegram message = one record).
@@ -981,19 +1001,26 @@ async function decryptRecord(buf, idx, key) {
 // overlaps network instead of happening after the whole file is downloaded.
 // Returns the assembled plaintext Uint8Array.
 async function fetchAndDecrypt(fileId, onProgress, total, ctrl) {
+  ctrl = ctrl || makeTransferCtrl();
   const results = [];
   let next = 0, stop = false, received = 0;
   const conc = 8; // download+decrypt in parallel (aggressive; per-chunk TG_DOWNLOAD_WORKERS multiplies connections)
   let lastSample = { received: 0, t: Date.now() };
   const key = await deriveKey(getAutoPassphrase());
+  const watchdog = setTimeout(() => { if (!ctrl.cancelled) ctrl.cancel(); }, OP_TIMEOUT_MS);
   async function fetchChunk(i) {
     let lastErr = null;
     for (let attempt = 1; attempt <= 4; attempt++) {
-      if (ctrl && ctrl.cancelled) throw new Error("cancelled");
-      let signal;
-      if (ctrl) { if (!ctrl.ac) ctrl.ac = new AbortController(); signal = ctrl.ac.signal; }
+      if (ctrl.cancelled) throw new Error("cancelled");
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), REQ_TIMEOUT_MS);
+      let onAbort;
+      if (ctrl.ac) {
+        if (ctrl.ac.signal.aborted) ac.abort();
+        else { onAbort = () => ac.abort(); ctrl.ac.signal.addEventListener("abort", onAbort); }
+      }
       try {
-        const r = await fetch(`${API}/files/${fileId}/chunk/${i}`, {credentials: "same-origin", signal});
+        const r = await fetch(`${API}/files/${fileId}/chunk/${i}`, {credentials: "same-origin", signal: ac.signal});
         if (r.status === 404) return { done: true };
         if (r.ok) {
           const buf = new Uint8Array(await r.arrayBuffer());
@@ -1005,17 +1032,24 @@ async function fetchAndDecrypt(fileId, onProgress, total, ctrl) {
         if (r.status === 401 || r.status === 403) break;
         await new Promise(res => setTimeout(res, 400 * attempt));
       } catch (e) {
-        if (e && e.name === "AbortError") throw new Error("cancelled");
-        lastErr = e;
+        if (e && e.name === "AbortError") {
+          if (ctrl.cancelled) throw new Error("cancelled");
+          lastErr = new Error(`Chunk ${i} request timed out after ${REQ_TIMEOUT_MS}ms`);
+        } else {
+          lastErr = e;
+        }
         await new Promise(res => setTimeout(res, 400 * attempt));
+      } finally {
+        clearTimeout(timer);
+        if (onAbort) ctrl.ac.signal.removeEventListener("abort", onAbort);
       }
     }
     throw lastErr || new Error("Chunk fetch failed");
   }
   async function worker() {
     while (!stop) {
-      if (ctrl && ctrl.cancelled) return;
-      if (ctrl && ctrl.paused) { await new Promise(res => ctrl.waiters.push(res)); if (ctrl.cancelled) return; }
+      if (ctrl.cancelled) return;
+      if (ctrl.paused) { await new Promise(res => ctrl.waiters.push(res)); if (ctrl.cancelled) return; }
       const i = next++;
       const res = await fetchChunk(i);
       if (res.done) { stop = true; return; }
@@ -1031,12 +1065,16 @@ async function fetchAndDecrypt(fileId, onProgress, total, ctrl) {
       }
     }
   }
-  await Promise.all(Array.from({length: conc}, worker));
-  if (ctrl && ctrl.cancelled) throw new Error("cancelled");
-  let n = 0; for (const c of results) if (c) n += c.length;
-  const out = new Uint8Array(n); let o = 0;
-  for (const c of results) if (c) { out.set(c, o); o += c.length; }
-  return out;
+  try {
+    await Promise.all(Array.from({length: conc}, worker));
+    if (ctrl.cancelled) throw new Error("cancelled");
+    let n = 0; for (const c of results) if (c) n += c.length;
+    const out = new Uint8Array(n); let o = 0;
+    for (const c of results) if (c) { out.set(c, o); o += c.length; }
+    return out;
+  } finally {
+    clearTimeout(watchdog);
+  }
 }
 
 async function playViaBlob(content, ext, isAudio, mime, plain) {
@@ -1054,8 +1092,14 @@ async function playViaBlob(content, ext, isAudio, mime, plain) {
     note.textContent = `Large file (${fmt(plain.length)}): decrypted in-browser, so it needs enough RAM to play. If playback fails, use Download instead.`;
     content.appendChild(note);
   }
+  media.onerror = () => {
+    const msg = media.error ? (media.error.message || `code ${media.error.code}`) : "unsupported or corrupt media";
+    content.innerHTML = `<div style="text-align:center;padding:40px;color:var(--danger)">Playback failed: ${escapeHtml(msg)}<br><button class="btn-sm active" onclick="downloadPreviewFile()">⬇ Download to view</button></div>`;
+  };
   media.src = url;
   media.load();
+  // Attempt autoplay; if blocked, controls remain so the user can press play.
+  try { await media.play(); } catch {}
 }
 
 // ── MKV playback ─────────────────────────────────────────────────────────────
@@ -1090,6 +1134,17 @@ function showMkvFallback(content, errMsg) {
       <button class="btn-sm active" onclick="downloadPreviewFile()">⬇ Download to view</button>
     </div>`;
 }
+// Dynamic import with a hard timeout so a slow/blocked CDN can never hang the
+// preview on "Preparing playback…" forever — it rejects and we show a fallback.
+async function importWithTimeout(url, ms = 30000) {
+  let to;
+  const timeout = new Promise((_, rej) => { to = setTimeout(() => rej(new Error("CDN import timed out")), ms); });
+  try {
+    return await Promise.race([import(url), timeout]);
+  } finally {
+    clearTimeout(to);
+  }
+}
 async function playMkvFromPreview(content) {
   content.innerHTML = `
     <div style="text-align:center">
@@ -1105,6 +1160,7 @@ async function playMkvFromPreview(content) {
       const eta = p.speed > 0 ? remaining / p.speed : 0;
       setOverlay(`⏳ Downloading & decrypting ${p.pct}% · ETA ${fmtEta(eta)}`);
     }, _previewFileSize);
+    if (!plain || !plain.length) { showMkvFallback(content, "File is empty"); return; }
     setOverlay("⚙️ Preparing playback…");
     await playMkvInto(video, plain, overlay);
   } catch (e) {
@@ -1118,8 +1174,8 @@ async function playMkvInto(video, plain, overlay) {
   let url = null;
   try {
     const [mkvMod, mp4muxer] = await Promise.all([
-      import("https://cdn.jsdelivr.net/npm/mkv-demuxer@0.1.0/+esm"),
-      import("https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/+esm"),
+      importWithTimeout("https://cdn.jsdelivr.net/npm/mkv-demuxer@0.1.0/+esm"),
+      importWithTimeout("https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/+esm"),
     ]);
     const MkvDemuxer = mkvMod.MkvDemuxer;
     const { Muxer, ArrayBufferTarget } = mp4muxer;
