@@ -491,13 +491,7 @@ async function processThumbQueue() {
   const { fileId, ext, imgEl, iconEl } = thumbQueue.shift();
   thumbActive++;
   try {
-    const passphrase = getAutoPassphrase();
-    const r = await fetch(`${API}/files/${fileId}/preview`, {credentials:"same-origin"});
-    if (!r.ok) throw new Error();
-    const buf = await r.arrayBuffer();
-    const ct = new Uint8Array(buf);
-    let plain;
-    try { plain = await decryptAssembled(ct, passphrase); } catch { return; }
+    const plain = await fetchChunkDecrypted(fileId, 0);
     const mime = getMimeForExt(ext);
     const blob = new Blob([plain], {type: mime});
     const url = URL.createObjectURL(blob);
@@ -830,16 +824,10 @@ function getMimeForExt(ext) {
   return map[ext] || "application/octet-stream";
 }
 function loadPreviewAsBlob(container, htmlTemplate) {
-  const passphrase = getAutoPassphrase();
   container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Decrypting…</div>';
-  fetch(`${API}/files/${_previewFileId}/preview`, {credentials:"same-origin"}).then(r => {
-    if (!r.ok) throw new Error("Preview failed");
-    return r.arrayBuffer();
-  }).then(async buf => {
-    const ct = new Uint8Array(buf);
-    let plain;
-    try { plain = await decryptAssembled(ct, passphrase); }
-    catch { container.innerHTML = `<div style="text-align:center;padding:40px;color:var(--danger)">Decryption failed</div>`; return; }
+  fetchAndDecrypt(_previewFileId, (p) => {
+    const el = container.querySelector("div"); if (el) el.textContent = `Decrypting ${p.pct}%`;
+  }, _previewFileSize).then(plain => {
     const ext = _previewFilename.split(".").pop().toLowerCase();
     const mime = getMimeForExt(ext);
     const blob = new Blob([plain], {type: mime});
@@ -848,7 +836,6 @@ function loadPreviewAsBlob(container, htmlTemplate) {
     const url = URL.createObjectURL(blob);
     setPreviewBlobUrl(url);
     container.innerHTML = htmlTemplate;
-    // htmlTemplate may be <img>, <iframe>, <video><source>, or audio wrapper — find correct media element
     let el = container.querySelector("img, iframe, video, audio");
     if (!el) el = container.firstElementChild;
     if (el.tagName === "VIDEO" || el.tagName === "AUDIO") {
@@ -856,7 +843,6 @@ function loadPreviewAsBlob(container, htmlTemplate) {
       if (srcEl) { srcEl.src = url; el.load(); }
       else el.src = url;
     } else if (el.tagName === "DIV") {
-      // audio wrapper case: <div><audio><source>
       const audio = el.querySelector("audio");
       if (audio) { const srcEl = audio.querySelector("source"); if (srcEl) srcEl.src = url; else audio.src = url; audio.load(); }
       else el.textContent = "Preview ready";
@@ -864,7 +850,7 @@ function loadPreviewAsBlob(container, htmlTemplate) {
       el.src = url;
     }
   }).catch(err => {
-    container.innerHTML = `<div style="text-align:center;padding:40px;color:var(--danger)">Preview failed: ${escapeHtml(err.message)}</div>`;
+    container.innerHTML = `<div style="text-align:center;padding:40px;color:var(--danger)">Preview failed: ${escapeHtml(err.message)}<br><button class="btn-sm active" onclick="downloadPreviewFile()">⬇ Download to view</button></div>`;
   });
 }
 
@@ -995,6 +981,23 @@ async function decryptRecord(buf, idx, key) {
   const out = new Uint8Array(n); let o = 0;
   for (const p of parts) { out.set(p, o); o += p.length; }
   return out;
+}
+
+// Fetch ONE stored chunk and decrypt just that record. Used for thumbnails so we
+// never pull the whole file through a single request (the /preview endpoint
+// streams the entire file, which violates Vercel's 60s serverless limit).
+async function fetchChunkDecrypted(fileId, index) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), REQ_TIMEOUT_MS);
+  try {
+    const r = await fetch(`${API}/files/${fileId}/chunk/${index}`, {credentials: "same-origin", signal: ac.signal});
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const buf = new Uint8Array(await r.arrayBuffer());
+    const key = await deriveKey(getAutoPassphrase());
+    return await decryptRecord(buf, index, key);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // Download every chunk AND decrypt each record as it lands, so decryption
@@ -1246,33 +1249,20 @@ async function playMkvInto(video, plain, overlay) {
 // init (ftyp+moov) + media segments (moof+mdat…), and append to MediaSource
 // as they arrive — so the whole file is never held in memory.
 function loadPreviewAsText(container, ext) {
-  const passphrase = getAutoPassphrase();
-container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Decrypting…</div>';
-  fetch(`${API}/files/${_previewFileId}/preview`).then(r => {
-    if (!r.ok) throw new Error("Preview failed");
-    return r.arrayBuffer();
-  }).then(async buf => {
-    const ct = new Uint8Array(buf);
-    let plain;
-    try { plain = await decryptAssembled(ct, passphrase); }
-    catch { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Decryption failed</div>'; return; }
+  container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Decrypting…</div>';
+  fetchAndDecrypt(_previewFileId, (p) => { const el = container.querySelector("div"); if (el) el.textContent = `Decrypting ${p.pct}%`; }, _previewFileSize).then(plain => {
     const text = new TextDecoder().decode(plain);
     container.innerHTML = `<pre style="margin:0;padding:16px;font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:break-word;color:var(--text);overflow:auto;max-height:65vh">${escapeHtml(text)}</pre>`;
   }).catch(err => {
-    container.innerHTML = `<div style="text-align:center;padding:40px;color:var(--danger)">${escapeHtml(err.message)}</div>`;
+    container.innerHTML = `<div style="text-align:center;padding:40px;color:var(--danger)">${escapeHtml(err.message)}<br><button class="btn-sm active" onclick="downloadPreviewFile()">⬇ Download to view</button></div>`;
   });
 }
 
 async function loadDocxPreview(container) {
-  const passphrase = getAutoPassphrase();
 if (typeof mammoth === "undefined") { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Word viewer library not loaded. Check your internet connection.</div>'; return; }
   container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Decrypting and rendering Word document…</div>';
   try {
-    const r = await fetch(`${API}/files/${_previewFileId}/preview`);
-    if (!r.ok) throw new Error("Preview failed");
-    const buf = await r.arrayBuffer();
-    const ct = new Uint8Array(buf);
-    let plain; try { plain = await decryptAssembled(ct, passphrase); } catch { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Decryption failed</div>'; return; }
+    const plain = await fetchAndDecrypt(_previewFileId, (p) => { const el = container.querySelector("div"); if (el) el.textContent = `Decrypting ${p.pct}%`; }, _previewFileSize);
     const result = await mammoth.convertToHtml({arrayBuffer: plain});
     const html = result.value || '<p style="color:var(--muted)">Document is empty.</p>';
     const warnings = result.messages.filter(m => m.type === "warning");
@@ -1283,15 +1273,10 @@ if (typeof mammoth === "undefined") { container.innerHTML = '<div style="text-al
 }
 
 async function loadXlsxPreview(container) {
-  const passphrase = getAutoPassphrase();
 if (typeof XLSX === "undefined") { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Excel viewer library not loaded. Check your internet connection.</div>'; return; }
   container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Decrypting and rendering spreadsheet…</div>';
   try {
-    const r = await fetch(`${API}/files/${_previewFileId}/preview`);
-    if (!r.ok) throw new Error("Preview failed");
-    const buf = await r.arrayBuffer();
-    const ct = new Uint8Array(buf);
-    let plain; try { plain = await decryptAssembled(ct, passphrase); } catch { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Decryption failed</div>'; return; }
+    const plain = await fetchAndDecrypt(_previewFileId, (p) => { const el = container.querySelector("div"); if (el) el.textContent = `Decrypting ${p.pct}%`; }, _previewFileSize);
     const workbook = XLSX.read(plain, {type: "array"});
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
@@ -1309,15 +1294,10 @@ if (typeof XLSX === "undefined") { container.innerHTML = '<div style="text-align
 }
 
 async function loadPptxPreview(container) {
-  const passphrase = getAutoPassphrase();
 if (typeof JSZip === "undefined") { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">PPT viewer library not loaded. Check your internet connection.</div>'; return; }
   container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Decrypting and rendering presentation…</div>';
   try {
-    const r = await fetch(`${API}/files/${_previewFileId}/preview`);
-    if (!r.ok) throw new Error("Preview failed");
-    const buf = await r.arrayBuffer();
-    const ct = new Uint8Array(buf);
-    let plain; try { plain = await decryptAssembled(ct, passphrase); } catch { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Decryption failed</div>'; return; }
+    const plain = await fetchAndDecrypt(_previewFileId, (p) => { const el = container.querySelector("div"); if (el) el.textContent = `Decrypting ${p.pct}%`; }, _previewFileSize);
     const zip = await JSZip.loadAsync(plain);
     const slideFiles = [];
     zip.forEach((path, file) => { if (path.match(/^ppt\/slides\/slide\d+\.xml$/) && !path.endsWith("/")) slideFiles.push({path, file}); });
@@ -1375,13 +1355,10 @@ export function editFile(fileId, filename, sizeBytes) {
 }
 
 async function loadFileForEdit(fileId) {
-  const passphrase = getAutoPassphrase();
 try {
-    const r = await fetch(`${API}/files/${fileId}/preview`);
-    if (!r.ok) throw new Error("Failed to load");
-    const buf = await r.arrayBuffer();
-    const ct = new Uint8Array(buf);
-    const plain = await decryptAssembled(ct, passphrase);
+    const m = fileMetaCache.get(fileId);
+    const size = (m && m.size) || 0;
+    const plain = await fetchAndDecrypt(fileId, null, size);
     document.getElementById("edit-textarea").value = new TextDecoder().decode(plain);
   } catch (err) { document.getElementById("edit-textarea").value = `Error loading file: ${err.message}`; }
 }
@@ -1408,12 +1385,11 @@ export function downloadEditFile() { if (_editFileId && _editFileName) downloadF
 
 let _editDocxBlob = null;
 async function loadDocxForEdit(fileId) {
-  const passphrase = getAutoPassphrase();
 if (typeof mammoth === "undefined") { document.getElementById("edit-rich-content").innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Word editor library not loaded.</div>'; return; }
   try {
-    const r = await fetch(`${API}/files/${fileId}/preview`);
-    if (!r.ok) throw new Error("Failed to load");
-    const buf = await r.arrayBuffer(); const ct = new Uint8Array(buf);     let plain; try { plain = await decryptAssembled(ct, passphrase); } catch { document.getElementById("edit-rich-content").innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger)">Decryption failed</div>'; return; }
+    const m = fileMetaCache.get(fileId);
+    const size = (m && m.size) || 0;
+    const plain = await fetchAndDecrypt(fileId, null, size);
     _editDocxBlob = new Blob([plain]);
     const result = await mammoth.convertToHtml({arrayBuffer: plain});
     const html = result.value || "";
