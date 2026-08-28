@@ -652,6 +652,7 @@ export async function downloadFileV2(fileId, filename, sizeBytes, opts = {}) {
 }
 
 export async function downloadFile(fileId, filename, sizeBytes) {
+  if (!sizeBytes) { const m = fileMetaCache.get(fileId); sizeBytes = (m && m.size) || 0; }
   await downloadFileV2(fileId, filename, sizeBytes);
 }
 
@@ -780,10 +781,12 @@ function isDocExt(name) {
 }
 let _previewFileId = null;
 let _previewFilename = "";
+let _previewFileSize = 0;
 
 export function previewFile(fileId, filename, sizeBytes) {
   _previewFileId = fileId;
   _previewFilename = filename;
+  _previewFileSize = parseInt(sizeBytes) || (fileMetaCache.get(fileId) && fileMetaCache.get(fileId).size) || 0;
   document.getElementById("preview-title").textContent = filename;
   const content = document.getElementById("preview-content");
   content.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Loading preview…</div>';
@@ -875,9 +878,16 @@ export async function playMediaStreaming(content, ext, isAudio) {
   const mime = isAudio
     ? (ext === "wav" ? "audio/wav" : ext === "ogg" ? "audio/ogg" : ext === "m4a" ? "audio/mp4" : "audio/mpeg")
     : (ext === "webm" ? "video/webm" : ext === "ogv" ? "video/ogg" : "video/mp4");
-  content.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Decrypting and preparing playback…</div>';
+  content.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)"><div id="media-prep">Decrypting and preparing playback…</div></div>';
+  const prep = () => content.querySelector("#media-prep");
   try {
-    const plain = await fetchAndDecrypt(_previewFileId);
+    const plain = await fetchAndDecrypt(_previewFileId, (p) => {
+      const el = prep();
+      if (!el) return;
+      const remaining = p.total ? (p.total - p.received) : 0;
+      const eta = p.speed > 0 ? remaining / p.speed : 0;
+      el.textContent = `Downloading & decrypting ${p.pct}% · ETA ${fmtEta(eta)}`;
+    }, _previewFileSize);
     playViaBlob(content, ext, isAudio, mime, plain);
   } catch (err) {
     content.innerHTML = `<div style="text-align:center;padding:40px;color:var(--danger)">Playback failed: ${escapeHtml(err.message)}<br><button class="btn-sm active" onclick="downloadPreviewFile()">⬇ Download to view</button></div>`;
@@ -1094,7 +1104,7 @@ async function playMkvFromPreview(content) {
       const remaining = p.total ? (p.total - p.received) : 0;
       const eta = p.speed > 0 ? remaining / p.speed : 0;
       setOverlay(`⏳ Downloading & decrypting ${p.pct}% · ETA ${fmtEta(eta)}`);
-    });
+    }, _previewFileSize);
     setOverlay("⚙️ Preparing playback…");
     await playMkvInto(video, plain, overlay);
   } catch (e) {
@@ -1278,7 +1288,7 @@ if (typeof JSZip === "undefined") { container.innerHTML = '<div style="text-alig
 
 export function downloadPreviewFile() {
   if (!_previewFileId || !_previewFilename) return;
-  downloadFile(_previewFileId, _previewFilename);
+  downloadFile(_previewFileId, _previewFilename, _previewFileSize);
 }
 
 // ── EDIT ────────────────────────────────────────────────────────────────────
@@ -1338,7 +1348,7 @@ const text = document.getElementById("edit-textarea").value;
   if (r.ok) { closeModal("edit-modal"); refreshFiles(); toast("Saved as new version"); } else { const d = await r.json(); toast(d.error || "Save failed", "err"); }
 }
 
-export function downloadEditFile() { if (_editFileId && _editFileName) downloadFile(_editFileId, _editFileName); }
+export function downloadEditFile() { if (_editFileId && _editFileName) downloadFile(_editFileId, _editFileName, _editSizeBytes); }
 
 let _editDocxBlob = null;
 async function loadDocxForEdit(fileId) {
