@@ -107,10 +107,10 @@ async function deriveKey(passphrase) {
   return crypto.subtle.deriveKey({ name: "PBKDF2", salt: enc.encode("teamvault-fixed-salt"), iterations: 200000, hash: "SHA-256" }, km, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
 }
 function getMime(ext) {
-  const m = { png:"image/png", jpg:"image/jpeg", jpeg:"image/jpeg", gif:"image/gif", svg:"image/svg+xml", webp:"image/webp", bmp:"image/bmp", pdf:"application/pdf", mp4:"video/mp4", webm:"video/webm", mp3:"audio/mpeg", wav:"audio/wav" };
+  const m = { png:"image/png", jpg:"image/jpeg", jpeg:"image/jpeg", gif:"image/gif", svg:"image/svg+xml", webp:"image/webp", bmp:"image/bmp", heic:"image/heic", heif:"image/heif", avif:"image/avif", tiff:"image/tiff", ico:"image/x-icon", pdf:"application/pdf", mp4:"video/mp4", webm:"video/webm", mp3:"audio/mpeg", wav:"audio/wav" };
   return m[ext] || "application/octet-stream";
 }
-const CHUNKED_MAGIC = new TextEncoder().encode("TVCHNK01");
+const CHUNKED_MAGIC = new Uint8Array([0x54,0x56,0x43,0x48,0x4e,0x4b,0x30,0x31,0,0,0,0,0,0,0,0]);
 function _readU32be(buf, off){ return ((buf[off]<<24)|(buf[off+1]<<16)|(buf[off+2]<<8)|buf[off+3])>>>0; }
 function concatBytes(parts){ let n=0; for(const p of parts) n+=p.length; const o=new Uint8Array(n); let off=0; for(const p of parts){o.set(p,off);off+=p.length;} return o; }
 async function decryptAssembled(ct, passphrase){
@@ -190,7 +190,7 @@ async function showDownload(d, password) {
     const mime = getMime(ext);
     const blob = new Blob([plain], { type: mime });
     const urlBlob = URL.createObjectURL(blob);
-    const isImage = ["png","jpg","jpeg","gif","svg","webp","bmp"].includes(ext);
+    const isImage = ["png","jpg","jpeg","gif","svg","webp","bmp","heic","heif","avif","tiff","ico"].includes(ext);
     const isPdf = ext === "pdf";
     const isVideo = ["mp4","webm"].includes(ext);
     const isAudio = ["mp3","wav","ogg"].includes(ext);

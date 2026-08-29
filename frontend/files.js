@@ -439,7 +439,7 @@ export function clearFileSearch() {
 }
 
 function getFileIcon(ext) {
-  const icons = { png:"🖼️", jpg:"🖼️", jpeg:"🖼️", gif:"🖼️", svg:"🖼️", webp:"🖼️", bmp:"🖼️", pdf:"📄", mp4:"🎬", webm:"🎬", mp3:"🎵", wav:"🎵", ogg:"🎵", docx:"📝", doc:"📝", xlsx:"📊", xls:"📊", pptx:"📊", ppt:"📊", txt:"📄", md:"📄", zip:"📦", rar:"📦" };
+  const icons = { png:"🖼️", jpg:"🖼️", jpeg:"🖼️", gif:"🖼️", svg:"🖼️", webp:"🖼️", bmp:"🖼️", heic:"🖼️", heif:"🖼️", avif:"🖼️", tiff:"🖼️", ico:"🖼️", pdf:"📄", mp4:"🎬", webm:"🎬", mp3:"🎵", wav:"🎵", ogg:"🎵", docx:"📝", doc:"📝", xlsx:"📊", xls:"📊", pptx:"📊", ppt:"📊", txt:"📄", md:"📄", zip:"📦", rar:"📦" };
   return icons[ext] || "📄";
 }
 export function toggleMenu(fileId) {
@@ -460,7 +460,7 @@ const thumbCache = new Map();
 let thumbActive = 0;
 const thumbQueue = [];
 const MAX_THUMB_CONCURRENT = 3;
-const imageExts = ["png","jpg","jpeg","gif","svg","webp","bmp"];
+const imageExts = ["png","jpg","jpeg","gif","svg","webp","bmp","heic","heif","avif","tiff","ico"];
 
 const thumbObserver = new IntersectionObserver((entries) => {
   entries.forEach(entry => {
@@ -501,17 +501,24 @@ async function processThumbQueue() {
     if (size > 4 * 1024 * 1024) {
       plain = await fetchAndDecrypt(fileId, null, size);
     } else {
-      plain = await fetchChunkDecrypted(fileId, 0);
+      try {
+        plain = await fetchChunkDecrypted(fileId, 0);
+        if (!plain || plain.length === 0) throw new Error("empty thumb");
+      } catch {
+        // Fallback to full fetch for legacy files or truncated chunks
+        plain = await fetchAndDecrypt(fileId, null, size);
+      }
     }
     const blob = new Blob([plain], {type: mime});
     const url = URL.createObjectURL(blob);
     thumbCache.set(fileId, url);
     imgEl.onerror = null; imgEl.onload = null;
     if (size <= 4 * 1024 * 1024) {
-      // Partial (truncated) decode -> upgrade to the full file once.
+      // Partial (truncated/corrupt) decode -> upgrade to the full file once.
       imgEl.onerror = async () => {
         try {
           const full = await fetchAndDecrypt(fileId, null, size);
+          if (!full || !full.length) return;
           const b2 = new Blob([full], {type: mime});
           const u2 = URL.createObjectURL(b2);
           thumbCache.set(fileId, u2);
@@ -812,7 +819,7 @@ export function previewFile(fileId, filename, sizeBytes) {
   content.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Loading preview…</div>';
   openModal("preview-modal");
   const ext = filename.split(".").pop().toLowerCase();
-  if (["png","jpg","jpeg","gif","svg","webp","bmp"].includes(ext)) {
+  if (["png","jpg","jpeg","gif","svg","webp","bmp","heic","heif","avif","tiff","ico"].includes(ext)) {
     loadPreviewAsBlob(content, `<img src="" alt="${escapeHtml(filename)}" style="max-width:100%;max-height:70vh;display:block;margin:auto;border-radius:4px">`);
   } else if (ext === "pdf") {
     loadPreviewAsBlob(content, `<iframe src="" style="width:100%;height:70vh;border:none;border-radius:4px"></iframe>`);
@@ -844,7 +851,7 @@ export function previewFile(fileId, filename, sizeBytes) {
 }
 
 function getMimeForExt(ext) {
-  const map = { png:"image/png", jpg:"image/jpeg", jpeg:"image/jpeg", gif:"image/gif", svg:"image/svg+xml", webp:"image/webp", bmp:"image/bmp", pdf:"application/pdf", mp4:"video/mp4", webm:"video/webm", mp3:"audio/mpeg", wav:"audio/wav", ogg:"audio/ogg" };
+  const map = { png:"image/png", jpg:"image/jpeg", jpeg:"image/jpeg", gif:"image/gif", svg:"image/svg+xml", webp:"image/webp", bmp:"image/bmp", heic:"image/heic", heif:"image/heif", avif:"image/avif", tiff:"image/tiff", ico:"image/x-icon", pdf:"application/pdf", mp4:"video/mp4", webm:"video/webm", mp3:"audio/mpeg", wav:"audio/wav", ogg:"audio/ogg" };
   return map[ext] || "application/octet-stream";
 }
 function loadPreviewAsBlob(container, htmlTemplate) {
@@ -1008,6 +1015,39 @@ async function decryptRecord(buf, idx, key) {
   return out;
 }
 
+// Decrypt a fully concatenated encrypted blob (all chunks joined) using the same
+// key. Handles both new chunked format (magic + length-prefixed records) and
+// legacy single-IV format. Mirrors shared.html's decryptAssembled but takes a
+// pre-derived CryptoKey for efficiency.
+async function decryptAssembledWithKey(ct, key) {
+  if (!ct || ct.length === 0) return new Uint8Array(0);
+  const isChunked = ct.length >= 16 && ct.slice(0, 16).every((b, i) => b === CHUNKED_MAGIC[i]);
+  if (isChunked) {
+    const plains = [];
+    let pos = 16;
+    while (pos + 4 <= ct.length) {
+      const len = _readU32be(ct, pos);
+      pos += 4;
+      if (len < 12 || pos + len > ct.length) break;
+      const rec = ct.slice(pos, pos + len);
+      pos += len;
+      const iv = rec.slice(0, 12);
+      const pt = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, rec.slice(12)));
+      plains.push(pt);
+    }
+    let total = plains.reduce((a, p) => a + p.length, 0);
+    const out = new Uint8Array(total);
+    let o = 0;
+    for (const p of plains) { out.set(p, o); o += p.length; }
+    return out;
+  } else {
+    if (ct.length < 12) throw new Error("Invalid ciphertext");
+    const iv = ct.slice(0, 12);
+    const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct.slice(12));
+    return new Uint8Array(pt);
+  }
+}
+
 // Fetch ONE stored chunk and decrypt just that record. Used for thumbnails so we
 // never pull the whole file through a single request (the /preview endpoint
 // streams the entire file, which violates Vercel's 60s serverless limit).
@@ -1018,21 +1058,37 @@ async function fetchChunkDecrypted(fileId, index) {
     const r = await fetch(`${API}/files/${fileId}/chunk/${index}`, {credentials: "same-origin", signal: ac.signal});
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const buf = new Uint8Array(await r.arrayBuffer());
+    if (!buf || !buf.length) throw new Error("Empty chunk");
     const key = await deriveKey(getAutoPassphrase());
-    return await decryptRecord(buf, index, key);
+    const isChunked = buf.length >= 16 && buf.slice(0, 16).every((b, i) => b === CHUNKED_MAGIC[i]);
+    if (isChunked) {
+      return await decryptRecord(buf, index, key);
+    } else {
+      // Legacy file: whole file was [IV 12][ciphertext] split across Telegram messages.
+      // Only index 0 of a small legacy file (single message) is decryptable alone.
+      if (index !== 0) throw new Error("legacy slice not decryptable");
+      if (buf.length < 28) throw new Error("chunk too small");
+      try {
+        const iv = buf.slice(0, 12);
+        const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, buf.slice(12));
+        return new Uint8Array(pt);
+      } catch (e) {
+        throw e;
+      }
+    }
   } finally {
     clearTimeout(timer);
   }
 }
 
-// Download every chunk AND decrypt each record as it lands, so decryption
-// overlaps network instead of happening after the whole file is downloaded.
-// Returns the assembled plaintext Uint8Array.
+// Download every chunk, concatenate encrypted bytes, then decrypt the
+// assembled blob. Handles both new chunked format (magic + per-record
+// encryption) and legacy single-IV format for backward compatibility.
 async function fetchAndDecrypt(fileId, onProgress, total, ctrl) {
   ctrl = ctrl || makeTransferCtrl();
-  const results = [];
+  const rawResults = [];
   let next = 0, stop = false, received = 0;
-  const conc = 8; // download+decrypt in parallel (aggressive; per-chunk TG_DOWNLOAD_WORKERS multiplies connections)
+  const conc = 8;
   let lastSample = { received: 0, t: Date.now() };
   const key = await deriveKey(getAutoPassphrase());
   const watchdog = setTimeout(() => { if (!ctrl.cancelled) ctrl.cancel(); }, OP_TIMEOUT_MS);
@@ -1081,25 +1137,27 @@ async function fetchAndDecrypt(fileId, onProgress, total, ctrl) {
       const i = next++;
       const res = await fetchChunk(i);
       if (res.done) { stop = true; return; }
-      const pt = await decryptRecord(res.buf, i, key);
-      results[i] = pt; received += pt.length;
+      rawResults[i] = res.buf; received += res.buf.length;
       if (onProgress) {
         const now = Date.now();
         const dt = (now - lastSample.t) / 1000;
         let speed = 0;
         if (dt >= 0.4) { speed = (received - lastSample.received) / dt; lastSample = { received, t: now }; }
-        const pct = total ? Math.min(99, Math.round(received / total * 100)) : 0;
-        onProgress({ received, total, pct, speed });
+        const pct = total ? Math.min(99, Math.round(received / (total + 28) * 100)) : 0;
+        onProgress({ received: Math.min(received, total || received), total, pct, speed });
       }
     }
   }
   try {
     await Promise.all(Array.from({length: conc}, worker));
     if (ctrl.cancelled) throw new Error("cancelled");
-    let n = 0; for (const c of results) if (c) n += c.length;
-    const out = new Uint8Array(n); let o = 0;
-    for (const c of results) if (c) { out.set(c, o); o += c.length; }
-    return out;
+    let n = 0; for (const c of rawResults) if (c) n += c.length;
+    if (n === 0) throw new Error("Empty file");
+    const ct = new Uint8Array(n); let o = 0;
+    for (const c of rawResults) if (c) { ct.set(c, o); o += c.length; }
+    const plain = await decryptAssembledWithKey(ct, key);
+    if (onProgress) onProgress({ received: plain.length, total: plain.length, pct: 100, speed: 0 });
+    return plain;
   } finally {
     clearTimeout(watchdog);
   }
